@@ -1,0 +1,17 @@
+# Compiled binaries
+/bin/
+*.test
+*.out
+
+# Editor / OS scratch
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# Go build cache + module cache shouldn't be checked in
+/vendor/
+
+# Coverage
+coverage.out
+coverage.html
