@@ -1,16 +1,22 @@
-// Package jess is a streaming agent-loop runtime for Go applications.
+// Package jess is a thin meta-package; the real surface lives in its
+// subpackages:
 //
-// The harness owns the iterate-until-no-more-tool-calls loop and the
-// event stream back to the caller. It does not own transport, config,
-// or credentials — the host wires those in by implementing the
-// Provider, ToolRunner, and store interfaces.
+//   - jess/memory — durable agent memory: a Memory interface, a Store
+//     interface for persistence, and adapters that plug into
+//     agentcore's ContextManager and OnMessage hooks.
+//   - jess/skills — registerable capability bundles: a Skill type
+//     combining a system-prompt contribution with zero-or-more
+//     agentcore.Tool implementations, plus loaders that discover
+//     skills from disk.
 //
-// jess was extracted from the talon gateway (github.com/guygrigsby/talon)
-// after the loop had proven itself there. The clean-slate package design
-// is intentional: the talon-internal version had grown coupling to
-// merged-config readers and OS path layouts that don't belong in a
-// reusable library.
+// jess sits on top of github.com/voocel/agentcore — it does NOT
+// re-implement the agent loop, provider abstraction, tool dispatch,
+// or permission engine. Hosts wire jess's extensions in via
+// agentcore's AgentOption surface.
 //
-// Status: pre-1.0. Expect API churn until the runtime has at least one
-// independent caller beyond talon.
+// Why two packages, not one: memory and skills are independent
+// concerns with different stable surfaces. A host that wants only
+// memory shouldn't pull in skill loaders, and vice versa.
+//
+// Status: pre-1.0. API will change before v1. See subpackage docs.
 package jess
