@@ -1,0 +1,4 @@
+github.com/voocel/agentcore v1.6.9 h1:Wl3KMNkH0dr1ZGkv8kq7RmMnVA3fXe0dpsOSTK6LuJw=
+github.com/voocel/agentcore v1.6.9/go.mod h1:DHs7JxwyBGEK+KhTib4mDtHeh0g3uzRw9r95N+zASz0=
+github.com/voocel/litellm v1.6.12 h1:C/JP/F6wKtN6t9c23CGIX9sSAQMKs4UCuUz3jd/mxsA=
+github.com/voocel/litellm v1.6.12/go.mod h1:6MBUu3I4DHm7h72Vl+3nqLruSwYmgqMf/I9BGoordJ4=
