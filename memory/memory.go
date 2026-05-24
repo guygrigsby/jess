@@ -113,3 +113,31 @@ type Recaller interface {
 // capability (e.g. semantic Text matching when the backing Store only
 // supports tag lookup). Callers check with errors.Is.
 var ErrUnsupported = errors.New("memory: operation unsupported by this Store")
+
+// VectorStore is an optional capability interface for Stores that
+// support nearest-neighbor vector search. Recallers (like
+// VectorRecaller) type-assert their Store argument to this
+// interface; non-vector Stores fail the assertion and fall through
+// to their text-only path.
+//
+// Implementations document the embedder they index against; callers
+// MUST pass a query vector produced by the same embedder model the
+// Store was constructed with, or results are nonsense. The simplest
+// way: every Store that satisfies VectorStore exposes an Embedder
+// via Embedder() so callers don't have to track two configurations.
+type VectorStore interface {
+	Store
+
+	// SearchVector returns the entries closest to vec, in
+	// nearest-first order. Distance metric is implementation-
+	// defined (chromem-go uses cosine). filter narrows the
+	// candidate set the same way Query does in Store.Recall —
+	// AgentID, Kind, Tags. Empty filter matches everything.
+	SearchVector(ctx context.Context, vec []float32, max int, filter Query) ([]Entry, error)
+
+	// Embedder returns the Embedder this Store was built with.
+	// Lets Recallers produce query vectors with the same model
+	// the stored vectors were produced with, without the caller
+	// threading both through.
+	Embedder() Embedder
+}
