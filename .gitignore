@@ -2,6 +2,11 @@
 /bin/
 *.test
 *.out
+/quickstart
+# Anything in examples/*/ that's a bare-named build artifact. Each
+# example main package compiles to a binary named after its dir.
+/examples/*/quickstart
+/examples/*/main
 
 # Editor / OS scratch
 .DS_Store

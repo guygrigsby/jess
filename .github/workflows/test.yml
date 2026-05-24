@@ -1,0 +1,60 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: vet + race tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          # cache: true is the default in setup-go v5+ but spelling it out
+          # so a future ratchet doesn't silently bust caching.
+          cache: true
+
+      - name: go mod download
+        run: go mod download
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go test (race)
+        # E2E test in memory/embed/gomlx downloads ~90MB; gated on
+        # JESS_EMBEDDER_E2E env var so CI doesn't pay it. Set in a
+        # separate workflow when we want pre-release verification.
+        run: go test -race -timeout 5m ./...
+
+  govulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: govulncheck
+        # Non-blocking: vuln findings in deep transitive deps
+        # shouldn't fail PRs without a maintainer call. Surfaces
+        # in the CI log for visibility.
+        run: govulncheck ./... || true
