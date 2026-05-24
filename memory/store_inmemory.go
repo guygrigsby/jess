@@ -19,6 +19,14 @@ type InMemoryStore struct {
 	mu      sync.RWMutex
 	entries map[string]Entry // keyed by ID
 
+	// keyToID maps (AgentID|Key) → current entry ID. On Append
+	// with a non-empty Key, any prior entry at the same key gets
+	// removed and the new ID takes its place — that's the
+	// supersession semantic. AgentID is included in the map key
+	// so two agents can use the same semantic Key without
+	// colliding.
+	keyToID map[string]string
+
 	now func() time.Time // injectable clock for deterministic tests
 }
 
@@ -28,6 +36,7 @@ type InMemoryStore struct {
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{
 		entries: make(map[string]Entry),
+		keyToID: make(map[string]string),
 		now:     time.Now,
 	}
 }
@@ -40,30 +49,60 @@ func (s *InMemoryStore) SetClock(fn func() time.Time) {
 	s.now = fn
 }
 
-// Append persists e. ID is assigned by hashing (Text + AgentID +
-// Kind), so semantically-identical entries dedupe: a second Append
-// with the same content for the same agent returns the existing
-// entry rather than creating a new one. CreatedAt is preserved
-// across dedupe (the original creation wins).
+// Append persists e. Two interactions worth flagging:
+//
+//   - Content-address dedupe: ID is hashed from
+//     (AgentID, Kind, Key, Text). Same content + same Key produces
+//     the same ID, so a re-Append is a no-op (returns the existing
+//     entry with merged tags; CreatedAt preserved).
+//   - Key-based supersession: if e.Key is set AND a prior entry
+//     exists at the same (AgentID, Key), the prior entry is
+//     REMOVED and the new one takes its place. Use Key for facts
+//     that update over time (preferences, current values).
+//
+// These two interact: re-Appending identical content under the same
+// Key returns the existing entry (content-dedupe wins). Appending
+// DIFFERENT content under the same Key supersedes the prior entry.
 func (s *InMemoryStore) Append(ctx context.Context, e Entry) (Entry, error) {
 	if e.ID == "" {
 		e.ID = entryID(e)
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
 	if existing, ok := s.entries[e.ID]; ok {
-		// Merge tags so a re-append with new tags grows the set
-		// without losing the original CreatedAt. Other fields
-		// preserve the original.
+		// Re-Append of identical content (Key-aware). Merge tags,
+		// preserve everything else.
 		existing.Tags = mergeTags(existing.Tags, e.Tags)
 		s.entries[e.ID] = existing
+		if e.Key != "" {
+			s.keyToID[agentKeyIndex(e.AgentID, e.Key)] = existing.ID
+		}
 		return existing, nil
 	}
+
+	// New ID. If Key is set and a prior entry occupies that key,
+	// remove it — the new entry supersedes.
+	if e.Key != "" {
+		idx := agentKeyIndex(e.AgentID, e.Key)
+		if priorID, ok := s.keyToID[idx]; ok {
+			delete(s.entries, priorID)
+		}
+		s.keyToID[idx] = e.ID
+	}
+
 	if e.CreatedAt.IsZero() {
 		e.CreatedAt = s.now()
 	}
 	s.entries[e.ID] = e
 	return e, nil
+}
+
+// agentKeyIndex composes (AgentID, Key) into the keyToID map's
+// key. Using "|" as separator since neither field is expected to
+// contain it. Global entries (AgentID="") use the bare Key.
+func agentKeyIndex(agentID, key string) string {
+	return agentID + "|" + key
 }
 
 // Recall returns the entries matching q in newest-first order. Scoring
@@ -90,10 +129,15 @@ func (s *InMemoryStore) Recall(ctx context.Context, q Query, max int) ([]Entry, 
 }
 
 // Forget removes the entry with the given ID. Idempotent — no error
-// for unknown IDs.
+// for unknown IDs. Also clears any keyToID entry pointing at this
+// ID so a subsequent Append with the same Key starts fresh instead
+// of trying to supersede a no-longer-present entry.
 func (s *InMemoryStore) Forget(ctx context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if existing, ok := s.entries[id]; ok && existing.Key != "" {
+		delete(s.keyToID, agentKeyIndex(existing.AgentID, existing.Key))
+	}
 	delete(s.entries, id)
 	return nil
 }
@@ -130,13 +174,18 @@ func matches(e Entry, q Query) bool {
 }
 
 // entryID is the content-address ID assigned when callers leave it
-// empty. Stable for (AgentID, Kind, Text) — same content always
-// hashes to the same ID, so Append dedupes correctly.
+// empty. Stable for (AgentID, Kind, Key, Text) — same content with
+// the same Key always hashes the same, so Append dedupes correctly.
+// Including Key in the hash means two entries with identical content
+// but different Keys get distinct IDs (correct — they semantically
+// represent different facts).
 func entryID(e Entry) string {
 	h := sha256.New()
 	h.Write([]byte(e.AgentID))
 	h.Write([]byte{0})
 	h.Write([]byte(e.Kind))
+	h.Write([]byte{0})
+	h.Write([]byte(e.Key))
 	h.Write([]byte{0})
 	h.Write([]byte(e.Text))
 	return hex.EncodeToString(h.Sum(nil))[:16]

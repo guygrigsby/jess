@@ -32,6 +32,7 @@ type ContextManager struct {
 	agentID  string
 	maxItems int
 	header   string
+	kinds    *KindRegistry
 
 	inner agentcore.ContextManager
 }
@@ -52,6 +53,12 @@ type ContextManagerOptions struct {
 	// Inner is the underlying ContextManager. May be nil — see
 	// PassthroughInner for the no-op default applied in that case.
 	Inner agentcore.ContextManager
+
+	// Kinds is the registry of per-Kind policies. nil uses the
+	// baked-in defaults from NewKindRegistry. The ContextManager
+	// uses it to decide which Kinds bypass recall (AlwaysInclude=true)
+	// and how many entries of each Kind to inject per turn.
+	Kinds *KindRegistry
 }
 
 // NewContextManager wires a Store + Recaller behind an
@@ -68,6 +75,7 @@ func NewContextManager(store Store, recaller Recaller, opts ContextManagerOption
 		agentID:  opts.AgentID,
 		maxItems: opts.MaxItems,
 		header:   opts.Header,
+		kinds:    opts.Kinds,
 		inner:    opts.Inner,
 	}
 	if cm.maxItems == 0 {
@@ -76,34 +84,91 @@ func NewContextManager(store Store, recaller Recaller, opts ContextManagerOption
 	if cm.header == "" && opts.Header == "" {
 		cm.header = "Relevant memories for this conversation:"
 	}
+	if cm.kinds == nil {
+		cm.kinds = NewKindRegistry()
+	}
 	if cm.inner == nil {
 		cm.inner = PassthroughInner{}
 	}
 	return cm
 }
 
-// Project builds the prompt view: inner.Project first, then prepends
-// the memory message if Recall returned anything. ShouldCommit is
-// always carried through from the inner (memory never commits).
+// Project builds the prompt view in three layers:
+//
+//  1. inner.Project produces the baseline (compaction etc).
+//  2. AlwaysInclude Kinds (user / feedback by default) get pulled
+//     directly from the Store, capped per-Kind by policy. These
+//     bypass recall scoring — they're CORE memories the model
+//     always operates against.
+//  3. Recall fills the remaining budget with relevance-scored
+//     entries from non-AlwaysInclude Kinds.
+//
+// The two memory blocks become ONE leading user message prepended
+// to the projection (so the model sees: CORE first, then RELEVANT,
+// then conversation). Memory injection never commits to the
+// runtime baseline — entries appear in the prompt view for one
+// call and vanish on the next.
 func (m *ContextManager) Project(ctx context.Context, msgs []agentcore.AgentMessage) (agentcore.ContextProjection, error) {
 	proj, err := m.inner.Project(ctx, msgs)
 	if err != nil {
 		return proj, err
 	}
-	entries, err := m.recallFor(ctx, msgs)
-	if err != nil {
-		// Memory failures must NOT block the LLM call. Log via
-		// agentcore's standard channel would be nice but we have
-		// no logger handle; the host's OnMessage / event stream
-		// can surface this later. For now, swallow and continue.
+
+	core := m.alwaysIncludeEntries(ctx)
+	relevant := m.recallForBudget(ctx, msgs, m.maxItems-len(core))
+	if len(core) == 0 && len(relevant) == 0 {
 		return proj, nil
 	}
-	if len(entries) == 0 {
-		return proj, nil
-	}
-	memMsg := m.formatEntries(entries)
+
+	memMsg := m.formatLayered(core, relevant)
 	proj.Messages = append([]agentcore.AgentMessage{memMsg}, proj.Messages...)
 	return proj, nil
+}
+
+// alwaysIncludeEntries pulls every entry of every AlwaysInclude
+// Kind for the agent, capped per-Kind by KindPolicy.MaxEntries.
+// Failures swallow — memory bugs must not block the LLM call.
+func (m *ContextManager) alwaysIncludeEntries(ctx context.Context) []Entry {
+	var out []Entry
+	for _, kind := range m.kinds.AlwaysIncludeKinds() {
+		policy := m.kinds.PolicyFor(kind)
+		max := policy.MaxEntries
+		if max == 0 {
+			max = m.maxItems
+		}
+		entries, err := m.store.Recall(ctx, Query{AgentID: m.agentID, Kind: string(kind)}, max)
+		if err != nil {
+			continue
+		}
+		out = append(out, entries...)
+	}
+	return out
+}
+
+// recallForBudget runs the Recaller for non-AlwaysInclude Kinds
+// up to the remaining budget. Returns nothing when budget <= 0
+// (core entries already filled the quota).
+func (m *ContextManager) recallForBudget(ctx context.Context, msgs []agentcore.AgentMessage, budget int) []Entry {
+	if budget <= 0 {
+		return nil
+	}
+	hint := lastTextContent(msgs)
+	entries, err := m.recaller.Recall(ctx, m.store, m.agentID, hint, budget)
+	if err != nil {
+		return nil
+	}
+	// Drop entries whose Kind is AlwaysInclude — they're already
+	// in `core` from alwaysIncludeEntries. Avoids duplicates if
+	// the Recaller doesn't kind-filter (SimpleRecaller doesn't).
+	out := entries[:0]
+	for _, e := range entries {
+		policy := m.kinds.PolicyFor(Kind(e.Kind))
+		if policy.AlwaysInclude {
+			continue
+		}
+		out = append(out, e)
+	}
+	return out
 }
 
 // Compact / RecoverOverflow / Sync / Usage / Snapshot delegate to
@@ -125,24 +190,39 @@ func (m *ContextManager) Usage() *agentcore.ContextUsage { return m.inner.Usage(
 
 func (m *ContextManager) Snapshot() *agentcore.ContextSnapshot { return m.inner.Snapshot() }
 
-// recallFor builds a conversation hint from the trailing user turn
-// (or assistant turn if no user is the last) and asks the Recaller
-// for matches. Keeps the hint short — we want to bias recall toward
-// the immediate context, not the whole history.
-func (m *ContextManager) recallFor(ctx context.Context, msgs []agentcore.AgentMessage) ([]Entry, error) {
-	hint := lastTextContent(msgs)
-	return m.recaller.Recall(ctx, m.store, m.agentID, hint, m.maxItems)
+// formatLayered builds the injected memory message with two
+// sub-sections: CORE (AlwaysInclude entries) and RELEVANT (recall
+// results), each only emitted when non-empty. Layout keeps CORE
+// at the top so the model sees stable facts before situational
+// ones — matters when budget is tight and the model truncates
+// from the bottom.
+func (m *ContextManager) formatLayered(core, relevant []Entry) agentcore.Message {
+	var b strings.Builder
+	if len(core) > 0 {
+		b.WriteString("Core memories (always relevant):\n\n")
+		writeEntries(&b, core)
+		if len(relevant) > 0 {
+			b.WriteString("\n")
+		}
+	}
+	if len(relevant) > 0 {
+		if m.header != "" {
+			b.WriteString(m.header)
+		} else {
+			b.WriteString("Relevant memories for this conversation:")
+		}
+		b.WriteString("\n\n")
+		writeEntries(&b, relevant)
+	}
+	return agentcore.Message{
+		Role: agentcore.Role("user"),
+		Content: []agentcore.ContentBlock{
+			agentcore.TextBlock(b.String()),
+		},
+	}
 }
 
-// formatEntries turns the matched memories into one agentcore
-// Message. The format is simple Markdown-ish so most models read it
-// well; future iterations might use a structured XML wrapper.
-func (m *ContextManager) formatEntries(entries []Entry) agentcore.Message {
-	var b strings.Builder
-	if m.header != "" {
-		b.WriteString(m.header)
-		b.WriteString("\n\n")
-	}
+func writeEntries(b *strings.Builder, entries []Entry) {
 	for _, e := range entries {
 		b.WriteString("- ")
 		if e.Kind != "" {
@@ -152,12 +232,6 @@ func (m *ContextManager) formatEntries(entries []Entry) agentcore.Message {
 		}
 		b.WriteString(e.Text)
 		b.WriteByte('\n')
-	}
-	return agentcore.Message{
-		Role: agentcore.Role("user"),
-		Content: []agentcore.ContentBlock{
-			agentcore.TextBlock(b.String()),
-		},
 	}
 }
 

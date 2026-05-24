@@ -37,6 +37,12 @@ type JSONLStore struct {
 
 // jsonlRecord is the on-disk shape. Tombstone records have ID set
 // and Deleted=true, with no other fields populated.
+//
+// New fields (Key, Source) are appended to the schema; older files
+// just lack them and decode as zero values. We never break readers
+// of older files — only readers of newer files lose the new fields
+// if pointed at older code, which is a non-issue for an embedded
+// library.
 type jsonlRecord struct {
 	ID        string    `json:"id"`
 	Deleted   bool      `json:"deleted,omitempty"`
@@ -45,6 +51,25 @@ type jsonlRecord struct {
 	Text      string    `json:"text,omitempty"`
 	Tags      []string  `json:"tags,omitempty"`
 	CreatedAt time.Time `json:"created_at,omitempty"`
+
+	// Key is the supersession identity (see Entry.Key). Stored
+	// as a top-level field so readers can apply supersession
+	// during file replay without parsing nested data.
+	Key string `json:"key,omitempty"`
+	// Source provenance, stored as a sub-object so the four
+	// fields can grow without bloating every record.
+	Source *sourceRecord `json:"source,omitempty"`
+}
+
+// sourceRecord mirrors Entry.Source on disk. Pointer in jsonlRecord
+// so absent provenance encodes as a missing field rather than an
+// empty object — keeps lines tighter for the common (manual
+// Append, no Source) case.
+type sourceRecord struct {
+	SessionID string `json:"session_id,omitempty"`
+	MessageID string `json:"message_id,omitempty"`
+	Tool      string `json:"tool,omitempty"`
+	Reason    string `json:"reason,omitempty"`
 }
 
 // NewJSONLStore returns a Store backed by the file at path. The file
@@ -142,8 +167,18 @@ func (s *JSONLStore) Forget(ctx context.Context, id string) error {
 	return s.appendRecordLocked(Entry{ID: id}) // empty body + ID is interpreted as tombstone by encode
 }
 
-// readAllLocked walks the file once, replaying tombstones, and
-// returns the live entries. Caller holds s.mu.
+// readAllLocked walks the file once, replaying tombstones AND
+// Key-based supersession, and returns the live entries. Caller
+// holds s.mu.
+//
+// Two passes:
+//
+//  1. Scan every record into a slot map keyed by ID, applying
+//     tombstones (Deleted=true marks slot deleted) and tracking
+//     the latest ID per (AgentID, Key).
+//  2. Walk the slot map: skip deleted slots; for entries with a
+//     non-empty Key, also skip any slot whose ID isn't the
+//     latest-known for that (AgentID, Key) — those are superseded.
 func (s *JSONLStore) readAllLocked() ([]Entry, error) {
 	f, err := os.Open(s.path)
 	if err != nil {
@@ -165,6 +200,10 @@ func (s *JSONLStore) readAllLocked() ([]Entry, error) {
 		deleted bool
 	}
 	by := map[string]slot{}
+	// (AgentID|Key) → latest ID seen for that key. Used in pass 2
+	// to drop superseded entries.
+	latestForKey := map[string]string{}
+
 	for scanner.Scan() {
 		line := scanner.Bytes()
 		if len(line) == 0 {
@@ -175,32 +214,47 @@ func (s *JSONLStore) readAllLocked() ([]Entry, error) {
 			return nil, fmt.Errorf("memory: parse %s: %w", s.path, err)
 		}
 		if rec.ID == "" {
-			// Pre-ID records (legacy / corruption) ignored — without
-			// an ID we can't dedupe.
 			continue
 		}
 		if rec.Deleted {
 			by[rec.ID] = slot{deleted: true}
 			continue
 		}
-		by[rec.ID] = slot{
-			entry: Entry{
-				ID:        rec.ID,
-				Kind:      rec.Kind,
-				AgentID:   rec.AgentID,
-				Text:      rec.Text,
-				Tags:      rec.Tags,
-				CreatedAt: rec.CreatedAt,
-			},
+		entry := Entry{
+			ID:        rec.ID,
+			Kind:      rec.Kind,
+			AgentID:   rec.AgentID,
+			Text:      rec.Text,
+			Tags:      rec.Tags,
+			CreatedAt: rec.CreatedAt,
+			Key:       rec.Key,
+		}
+		if rec.Source != nil {
+			entry.Source = Source{
+				SessionID: rec.Source.SessionID,
+				MessageID: rec.Source.MessageID,
+				Tool:      rec.Source.Tool,
+				Reason:    rec.Source.Reason,
+			}
+		}
+		by[rec.ID] = slot{entry: entry}
+		if rec.Key != "" {
+			latestForKey[agentKeyIndex(rec.AgentID, rec.Key)] = rec.ID
 		}
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("memory: scan %s: %w", s.path, err)
 	}
+
 	out := make([]Entry, 0, len(by))
-	for _, sl := range by {
+	for id, sl := range by {
 		if sl.deleted {
 			continue
+		}
+		if sl.entry.Key != "" {
+			if latest, ok := latestForKey[agentKeyIndex(sl.entry.AgentID, sl.entry.Key)]; ok && latest != id {
+				continue // superseded by a later Append
+			}
 		}
 		out = append(out, sl.entry)
 	}
@@ -242,11 +296,20 @@ func (s *JSONLStore) appendRecordLocked(e Entry) error {
 		Text:      e.Text,
 		Tags:      e.Tags,
 		CreatedAt: e.CreatedAt,
+		Key:       e.Key,
+	}
+	if e.Source != (Source{}) {
+		rec.Source = &sourceRecord{
+			SessionID: e.Source.SessionID,
+			MessageID: e.Source.MessageID,
+			Tool:      e.Source.Tool,
+			Reason:    e.Source.Reason,
+		}
 	}
 	// Empty Text + empty Kind + empty AgentID + no tags + zero
-	// CreatedAt is a tombstone — encode the Deleted flag for
-	// reader clarity.
-	if e.Text == "" && e.Kind == "" && e.AgentID == "" && len(e.Tags) == 0 && e.CreatedAt.IsZero() {
+	// CreatedAt + no Key + no Source is a tombstone — encode the
+	// Deleted flag for reader clarity.
+	if e.Text == "" && e.Kind == "" && e.AgentID == "" && len(e.Tags) == 0 && e.CreatedAt.IsZero() && e.Key == "" && rec.Source == nil {
 		rec.Deleted = true
 	}
 	line, err := json.Marshal(rec)

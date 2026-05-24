@@ -123,6 +123,20 @@ func (s *ChromemStore) Append(ctx context.Context, e Entry) (Entry, error) {
 		return e, nil
 	}
 
+	// Key-based supersession: if e.Key is set and a prior entry
+	// exists at the same (AgentID, Key), delete the prior before
+	// adding the new. chromem.Delete with a where-filter is the
+	// supported path — no scan-by-metadata required.
+	if e.Key != "" {
+		where := map[string]string{
+			"key":   e.Key,
+			"agent": e.AgentID,
+		}
+		if err := s.collection.Delete(ctx, where, nil); err != nil {
+			return Entry{}, fmt.Errorf("memory: chromem supersede on key %s: %w", e.Key, err)
+		}
+	}
+
 	doc := chromem.Document{
 		ID:       e.ID,
 		Metadata: entryToMetadata(e, s.embedder.Name()),
@@ -233,7 +247,8 @@ func (s *ChromemStore) Forget(ctx context.Context, id string) error {
 // metadata shape. Tags become a comma-joined string; CreatedAt
 // is RFC3339; the embedder name is recorded so future code can
 // detect "this entry was indexed by a different embedder" and
-// re-embed or refuse.
+// re-embed or refuse. Key + Source flatten so the where-filter
+// can express supersession queries.
 func entryToMetadata(e Entry, embedderName string) map[string]string {
 	m := map[string]string{
 		"agent":    e.AgentID,
@@ -243,6 +258,24 @@ func entryToMetadata(e Entry, embedderName string) map[string]string {
 	}
 	if len(e.Tags) > 0 {
 		m["tags"] = strings.Join(e.Tags, ",")
+	}
+	if e.Key != "" {
+		m["key"] = e.Key
+	}
+	// Source flattens with a prefix so it round-trips without a
+	// nested-map workaround (chromem metadata is map[string]string,
+	// no nesting).
+	if e.Source.SessionID != "" {
+		m["src.session"] = e.Source.SessionID
+	}
+	if e.Source.MessageID != "" {
+		m["src.message"] = e.Source.MessageID
+	}
+	if e.Source.Tool != "" {
+		m["src.tool"] = e.Source.Tool
+	}
+	if e.Source.Reason != "" {
+		m["src.reason"] = e.Source.Reason
 	}
 	return m
 }
@@ -255,6 +288,13 @@ func metadataToEntry(id string, m map[string]string, content string) Entry {
 		AgentID: m["agent"],
 		Kind:    m["kind"],
 		Text:    content,
+		Key:     m["key"],
+		Source: Source{
+			SessionID: m["src.session"],
+			MessageID: m["src.message"],
+			Tool:      m["src.tool"],
+			Reason:    m["src.reason"],
+		},
 	}
 	if raw := m["tags"]; raw != "" {
 		e.Tags = strings.Split(raw, ",")

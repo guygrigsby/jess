@@ -23,16 +23,10 @@ type Entry struct {
 	// not renumber.
 	ID string
 
-	// Kind tags the entry's semantic category. The taxonomy is
-	// caller-defined, but the common four (mirroring Claude Code's
-	// auto-memory types) work well:
-	//
-	//   "user"      — facts about who the user is
-	//   "feedback"  — explicit corrections/preferences
-	//   "project"   — current goals, decisions, deadlines
-	//   "reference" — pointers into external systems
-	//
-	// Empty Kind is valid; treat it as "untyped" in Recall scoring.
+	// Kind tags the entry's semantic category. See the Kind type
+	// (kind.go) for the canonical taxonomy + per-Kind retrieval
+	// policy. Stored as a plain string so raw literals work
+	// without conversion. Empty Kind picks up FallbackKindPolicy.
 	Kind string
 
 	// AgentID scopes the entry. A multi-agent host (jess's design
@@ -51,10 +45,50 @@ type Entry struct {
 	// reasonable cheap strategy.
 	Tags []string
 
+	// Key is an optional semantic identity. When set, Append
+	// REPLACES any prior Entry with the same (AgentID, Key) pair:
+	// the old entry is removed from the Store and the new entry
+	// takes its place. Use for facts that update over time —
+	// "user prefers tabs" → user changes mind → re-Append with
+	// the same Key and the new Text supersedes the old. Empty
+	// Key disables supersession (each Append is independent,
+	// subject only to content-hash dedupe).
+	Key string
+
+	// Source records provenance: which session / message / tool
+	// caused this entry to be saved. Useful for audit, "show me
+	// why you remember this," and bulk-Forget by session. Zero-
+	// valued Source is fine for manual programmatic Appends.
+	Source Source
+
 	// CreatedAt is set by Store.Append from time.Now if the caller
 	// left it zero. Preserved on Recall so policies can prefer
 	// recency.
 	CreatedAt time.Time
+}
+
+// Source captures where an Entry came from. Optional but strongly
+// recommended for entries written by the RememberTool — without
+// it, a user who asks "why do you remember X?" can't be answered
+// and "forget everything from session Y" can't be implemented.
+type Source struct {
+	// SessionID is the conversation/agent-run identifier that
+	// originated the save. Caller-defined shape; jess doesn't
+	// enforce a format. Talon uses sessionKey (e.g.
+	// "agent:main:main").
+	SessionID string
+	// MessageID is the specific message within SessionID that
+	// triggered the save (typically the assistant turn whose
+	// tool_call invoked the RememberTool).
+	MessageID string
+	// Tool names the tool that performed the save. Set to
+	// "remember" for the standard RememberTool path; hosts that
+	// wire their own save flow set their own identifier here.
+	Tool string
+	// Reason is free-form: "user said /remember", "model decided
+	// this was important", etc. Useful for audit; not interpreted
+	// by the recall pipeline.
+	Reason string
 }
 
 // Store is the persistence interface for memory entries. Implementations
