@@ -140,6 +140,13 @@ No CGO. No subprocess. No ONNX Runtime sidecar. Cross-compile
 intact. ~50ms per embedding on a modern Mac CPU (model load is
 one-shot at construction).
 
+Model weights are NOT bundled. `NewEmbedder()` downloads from
+HuggingFace on first run (~90MB for MiniLM) into the standard
+HuggingFace cache (`$HF_HOME` or `~/.cache/huggingface`); subsequent
+runs are warm. The model's license stays the model's license; jess
+takes no position. Air-gapped installs need to pre-populate the
+cache or point `HF_ENDPOINT` at a mirror.
+
 **Embedder is replaceable.** `Embedder` is an interface. Ship Ollama
 and OpenAI adapters when needed; hosts that prefer those swap one
 line.
