@@ -51,7 +51,13 @@ import (
 )
 
 // 1. In-process embedder (downloads ~90MB model on first use,
-//    cached after; no API key, no subprocess).
+//    cached after; no API key, no subprocess). Empty Options
+//    picks gomlx.DefaultModel (MiniLM-L6-v2). For other models
+//    use a known-good constant:
+//      gomlx.Options{Model: gomlx.ModelNomicEmbedText_V1_5}
+//    Or pass a custom HF repo and let NewEmbedder auto-detect
+//    Dim+SeqLen from config.json:
+//      gomlx.Options{ModelID: "your-org/your-model"}
 emb, _ := gomlx.NewEmbedder(gomlx.Options{})
 
 // 2. Vector store backed by chromem-go. Path persists to gob on disk.

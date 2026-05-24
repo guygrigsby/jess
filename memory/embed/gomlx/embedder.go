@@ -15,7 +15,9 @@ import (
 	onnxparser "github.com/gomlx/onnx-gomlx/onnx/parser"
 )
 
-// Default model + dims for the convenience constructor.
+// Legacy defaults kept for callers that referenced them directly.
+// New code should prefer DefaultModel (models.go) — it bundles the
+// three together and matches the same MiniLM target.
 const (
 	DefaultModelID = "sentence-transformers/all-MiniLM-L6-v2"
 	DefaultDim     = 384
@@ -45,19 +47,39 @@ type Embedder struct {
 	mu     sync.Mutex
 }
 
-// Options configures NewEmbedder. Zero-value is fine and resolves
-// to the all-MiniLM-L6-v2 defaults.
+// Options configures NewEmbedder. Resolution order, highest
+// precedence first:
+//
+//  1. Model (a bundled ID/Dim/SeqLen triple) — use one of the
+//     known-good constants (ModelNomicEmbedText, etc.).
+//  2. ModelID + Dim + SeqLen all set — explicit override.
+//  3. ModelID set with Dim/SeqLen zero — auto-detect Dim/SeqLen
+//     from the model's HuggingFace config.json (one extra ~5KB
+//     download on first run; cached after).
+//  4. Everything empty — falls back to DefaultModel (MiniLM-L6-v2).
+//
+// Resolution happens BEFORE the model download — invalid combinations
+// surface as construction errors, not silent wrong-vector bugs.
 type Options struct {
+	// Model bundles ID/Dim/SeqLen as one value. Highest-precedence
+	// way to specify the model. Use the canonical constants
+	// (gomlx.ModelMiniLM_L6_V2, gomlx.ModelNomicEmbedText_V1_5,
+	// etc.) for known-good targets, or build your own Model
+	// literal for a HF repo not on the list.
+	Model Model
+
 	// ModelID is the HuggingFace repo (e.g.
-	// "sentence-transformers/all-MiniLM-L6-v2"). Empty uses
-	// DefaultModelID.
+	// "sentence-transformers/all-MiniLM-L6-v2"). Used when Model
+	// is the zero value. When Dim/SeqLen below are zero,
+	// NewEmbedder auto-detects them from the repo's config.json.
 	ModelID string
 	// Dim is the embedding dimensionality the model produces.
-	// Empty uses DefaultDim (384 for MiniLM); set to match your
-	// chosen model (768 for nomic-embed-text, 1024 for mxbai-large).
+	// When zero (and Model is unset), auto-detected from
+	// config.json's hidden_size.
 	Dim int
 	// SeqLen is the fixed token length the model graph is built
-	// for. Empty uses DefaultSeqLen (128). Longer texts are
+	// for. When zero (and Model is unset), auto-detected from
+	// config.json's max_position_embeddings. Longer texts are
 	// truncated; shorter are padded.
 	SeqLen int
 	// AuthToken is the HuggingFace token (HF_TOKEN env). Required
@@ -68,18 +90,16 @@ type Options struct {
 // NewEmbedder downloads + loads a sentence-transformers model and
 // returns an in-process Embedder ready to call.
 func NewEmbedder(opts Options) (*Embedder, error) {
-	if opts.ModelID == "" {
-		opts.ModelID = DefaultModelID
-	}
-	if opts.Dim == 0 {
-		opts.Dim = DefaultDim
-	}
-	if opts.SeqLen == 0 {
-		opts.SeqLen = DefaultSeqLen
+	modelID, dim, seqLen, err := resolveModelOptions(opts)
+	if err != nil {
+		return nil, err
 	}
 	if opts.AuthToken == "" {
 		opts.AuthToken = os.Getenv("HF_TOKEN")
 	}
+	opts.ModelID = modelID
+	opts.Dim = dim
+	opts.SeqLen = seqLen
 
 	repo := hub.New(opts.ModelID).WithAuth(opts.AuthToken)
 	vocabPath, err := repo.DownloadFile("vocab.txt")
