@@ -6,9 +6,9 @@ import (
 	"os"
 	"sync"
 
+	"github.com/gomlx/compute"
+	_ "github.com/gomlx/compute/gobackend" // register the pure-Go backend
 	"github.com/gomlx/go-huggingface/hub"
-	"github.com/gomlx/gomlx/backends"
-	_ "github.com/gomlx/gomlx/backends/simplego" // register the pure-Go "go" backend
 	. "github.com/gomlx/gomlx/pkg/core/graph"
 	"github.com/gomlx/gomlx/pkg/core/tensors"
 	mlcontext "github.com/gomlx/gomlx/pkg/ml/context"
@@ -106,13 +106,15 @@ func NewEmbedder(opts Options) (*Embedder, error) {
 	}
 	ctx = ctx.Reuse()
 
-	// Explicitly request the pure-Go "go" backend (simplego). This
-	// ignores $GOMLX_BACKEND because the whole point of this
-	// embedder is no-CGO portability — letting an env var swap us
-	// onto XLA at runtime would silently break that promise.
-	backend, err := backends.NewWithConfig("go")
+	// Anonymous import of compute/gobackend above registers the
+	// pure-Go backend as the only candidate, so compute.New picks
+	// it deterministically. Whole point of this embedder is no-CGO
+	// portability; we don't want $GOMLX_BACKEND silently swapping
+	// us onto an XLA build at runtime, so we don't import any
+	// other backend here.
+	backend, err := compute.New()
 	if err != nil {
-		return nil, fmt.Errorf("jess/memory/embed/gomlx: backend init (simplego): %w", err)
+		return nil, fmt.Errorf("jess/memory/embed/gomlx: backend init: %w", err)
 	}
 
 	// Build the inference graph once. Mean-pooling and L2
