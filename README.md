@@ -143,9 +143,17 @@ one-shot at construction).
 Model weights are NOT bundled. `NewEmbedder()` downloads from
 HuggingFace on first run (~90MB for MiniLM) into the standard
 HuggingFace cache (`$HF_HOME` or `~/.cache/huggingface`); subsequent
-runs are warm. The model's license stays the model's license; jess
-takes no position. Air-gapped installs need to pre-populate the
-cache or point `HF_ENDPOINT` at a mirror.
+runs are warm. Cache layout matches the Python `huggingface_hub`
+client's, so a user who already has the model cached from another
+tool gets a warm start for free.
+
+The download path is pure Go HTTP via `gomlx/go-huggingface/hub` —
+no `huggingface-cli` install, no Python, no `pip`. Just stdlib
+`net/http` against `huggingface.co` (or `$HF_ENDPOINT` for
+mirrors / air-gapped installs).
+
+The model's license stays the model's license; jess takes no
+position on redistribution.
 
 **Embedder is replaceable.** `Embedder` is an interface. Ship Ollama
 and OpenAI adapters when needed; hosts that prefer those swap one
