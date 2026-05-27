@@ -2,13 +2,18 @@ package event
 
 import "sync"
 
-// Stream is a single-consumer fan-out of run Events. Producers (the
-// anti-corruption layer, and later the subagent Pool's merger) call Send; the
-// host ranges over Events(). Backpressure is by blocking send against the
+// Stream multiplexes run Events from many producers (the anti-corruption
+// layer, and later the subagent Pool's merger) onto a single consumer that
+// ranges over Events() (fan-in). Backpressure is by blocking send against the
 // buffered channel: a slow consumer slows producers, bounding memory.
 //
 // Send after Close is a no-op (never a panic), so a producer that outlives the
 // run is harmless. Close is idempotent.
+//
+// Limitation: a Send blocked on a full buffer holds the read lock, so Close
+// waits for it to drain rather than preempting it. Callers are expected to
+// stop producers (via context cancellation) before Close. Phase 3 removes this
+// caveat by giving the Pool's merger sole ownership of the stream lifecycle.
 type Stream struct {
 	mu     sync.RWMutex
 	ch     chan Event

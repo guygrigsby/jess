@@ -4,7 +4,10 @@
 // agentcore.
 package message
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"strings"
+)
 
 // Role identifies who produced a Message.
 type Role string
@@ -48,13 +51,13 @@ type Message struct {
 // tool-result blocks are skipped. Convenience for the common "what did the
 // assistant say" case.
 func (m Message) Text() string {
-	var s string
-	for _, b := range m.Content {
-		if b.Kind == BlockText {
-			s += b.Text
+	var b strings.Builder
+	for _, blk := range m.Content {
+		if blk.Kind == BlockText {
+			b.WriteString(blk.Text)
 		}
 	}
-	return s
+	return b.String()
 }
 
 // UserText builds a user Message carrying a single text block.

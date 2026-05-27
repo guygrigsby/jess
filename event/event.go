@@ -29,8 +29,8 @@ type RunSummary struct {
 // Event is one observation from a run. Fields are populated according to Kind.
 //
 // AgentPath is nil for the root agent and carries name/instance segments for
-// subagents (for example {"research/0007"}, nested for deeper trees), so a
-// single stream represents an entire agent tree.
+// subagents (for example []string{"research/0007"}, nested for deeper
+// trees), so a single stream represents an entire agent tree.
 type Event struct {
 	Kind      EventKind
 	AgentPath []string
