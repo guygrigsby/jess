@@ -56,6 +56,23 @@ func TestMessagesToAC_ToolResultBecomesToolMessage(t *testing.T) {
 	}
 }
 
+func TestMessagesToAC_SkipsStrayToolResultInNonToolMessage(t *testing.T) {
+	in := []message.Message{{
+		Role: message.RoleAssistant,
+		Content: []message.ContentBlock{
+			{Kind: message.BlockText, Text: "hi"},
+			{Kind: message.BlockToolResult, ToolID: "c1", Result: []byte(`{}`)},
+		},
+	}}
+	got := messagesToAC(in)
+	if len(got) != 1 || len(got[0].Content) != 1 {
+		t.Fatalf("want 1 message with 1 block (stray tool result skipped), got %+v", got)
+	}
+	if got[0].Content[0].Type != ac.ContentText || got[0].Content[0].Text != "hi" {
+		t.Errorf("block = %+v", got[0].Content[0])
+	}
+}
+
 func TestMessageFromAC_AssistantBlocks(t *testing.T) {
 	in := ac.Message{Role: ac.RoleAssistant, Content: []ac.ContentBlock{
 		ac.TextBlock("hi"),

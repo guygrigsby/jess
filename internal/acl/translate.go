@@ -62,6 +62,13 @@ func messagesToAC(msgs []message.Message) []ac.Message {
 		}
 		blocks := make([]ac.ContentBlock, 0, len(m.Content))
 		for _, b := range m.Content {
+			// A tool result only belongs in a RoleTool message (handled
+			// above). If one appears here the message is malformed; skip it
+			// rather than emit an empty text block that silently drops the
+			// result's semantics.
+			if b.Kind == message.BlockToolResult {
+				continue
+			}
 			blocks = append(blocks, blockToAC(b))
 		}
 		out = append(out, ac.Message{Role: roleToAC(m.Role), Content: blocks})

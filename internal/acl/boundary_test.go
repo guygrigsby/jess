@@ -1,6 +1,8 @@
 package acl
 
 import (
+	"go/parser"
+	"go/token"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,12 +29,16 @@ var preMigrationAgentcoreImporters = []string{
 // This enforces ADR 0001's anti-corruption-layer boundary, protecting the new
 // vendor-free domain packages (message, event, tool, subagent, root jess) from
 // leaking the harness.
+//
+// It parses each file's import declarations (parser.ImportsOnly) rather than
+// scanning the raw bytes, so a mere mention of the path in a comment or string
+// literal does not trigger a false positive.
 func TestAgentcoreImportBoundary(t *testing.T) {
 	root, err := filepath.Abs("../..") // module root, two levels above internal/acl
 	if err != nil {
 		t.Fatal(err)
 	}
-	const dep = "voocel/agentcore"
+	const dep = "github.com/voocel/agentcore"
 
 	allowed := func(rel string) bool {
 		rel = filepath.ToSlash(rel)
@@ -47,6 +53,7 @@ func TestAgentcoreImportBoundary(t *testing.T) {
 		return false
 	}
 
+	fset := token.NewFileSet()
 	err = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -67,12 +74,15 @@ func TestAgentcoreImportBoundary(t *testing.T) {
 		if allowed(rel) {
 			return nil
 		}
-		b, err := os.ReadFile(path)
+		f, err := parser.ParseFile(fset, path, nil, parser.ImportsOnly)
 		if err != nil {
 			return err
 		}
-		if strings.Contains(string(b), dep) {
-			t.Errorf("%s imports %s; only internal/acl may (see ADR 0001)", filepath.ToSlash(rel), dep)
+		for _, imp := range f.Imports {
+			p := strings.Trim(imp.Path.Value, `"`)
+			if p == dep || strings.HasPrefix(p, dep+"/") {
+				t.Errorf("%s imports %s; only internal/acl may (see ADR 0001)", filepath.ToSlash(rel), p)
+			}
 		}
 		return nil
 	})
