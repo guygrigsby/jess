@@ -26,12 +26,33 @@ type VectorRecaller struct {
 	// almost always a mistake (the vectors would be in different
 	// spaces) — the field exists for advanced testing only.
 	Embedder Embedder
+
+	// minScore is an absolute cosine relevance floor. Entries whose
+	// recall Score is below it are dropped before Recall returns, so
+	// HybridRecaller's RRF fusion never sees sub-floor vector hits.
+	// Zero (the default) disables filtering.
+	minScore float32
+}
+
+// VectorRecallerOption configures a VectorRecaller.
+type VectorRecallerOption func(*VectorRecaller)
+
+// WithMinScore sets an absolute cosine relevance floor. Recalled
+// entries with a Score below f are dropped. The default (0) keeps
+// every nearest neighbor — set this to suppress off-topic recall.
+func WithMinScore(f float32) VectorRecallerOption {
+	return func(r *VectorRecaller) { r.minScore = f }
 }
 
 // NewVectorRecaller returns a VectorRecaller that uses the Store's
-// own Embedder for query vectors.
-func NewVectorRecaller() *VectorRecaller {
-	return &VectorRecaller{}
+// own Embedder for query vectors. With no options it applies no
+// relevance floor (every nearest neighbor is returned).
+func NewVectorRecaller(opts ...VectorRecallerOption) *VectorRecaller {
+	r := &VectorRecaller{}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Recall embeds conversationHint and asks the VectorStore for the
@@ -55,7 +76,21 @@ func (r *VectorRecaller) Recall(ctx context.Context, store Store, agentID, conve
 	if err != nil {
 		return nil, err
 	}
-	return vs.SearchVector(ctx, vec, max, Query{AgentID: agentID})
+	got, err := vs.SearchVector(ctx, vec, max, Query{AgentID: agentID})
+	if err != nil {
+		return nil, err
+	}
+	if r.minScore > 0 {
+		filtered := got[:0]
+		for _, e := range got {
+			if e.Score < r.minScore {
+				continue
+			}
+			filtered = append(filtered, e)
+		}
+		got = filtered
+	}
+	return got, nil
 }
 
 // HybridRecaller combines multiple Recallers via reciprocal rank
