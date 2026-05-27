@@ -178,3 +178,43 @@ func TestNativeModel_StreamBridgesToChunks(t *testing.T) {
 		t.Errorf("final chunk = %+v", got[1])
 	}
 }
+
+// blockingChatModel emits one delta then blocks until ctx is cancelled, never
+// sending a Done. It exercises nativeModel.Stream's cancellation path.
+type blockingChatModel struct{}
+
+func (blockingChatModel) SupportsTools() bool { return true }
+func (blockingChatModel) Generate(context.Context, []ac.Message, []ac.ToolSpec, ...ac.CallOption) (*ac.LLMResponse, error) {
+	return &ac.LLMResponse{}, nil
+}
+func (blockingChatModel) GenerateStream(ctx context.Context, _ []ac.Message, _ []ac.ToolSpec, _ ...ac.CallOption) (<-chan ac.StreamEvent, error) {
+	ch := make(chan ac.StreamEvent)
+	go func() {
+		defer close(ch)
+		select {
+		case <-ctx.Done():
+			return
+		case ch <- ac.StreamEvent{Type: ac.StreamEventTextDelta, Delta: "a"}:
+		}
+		<-ctx.Done() // block (no Done event) until cancelled
+	}()
+	return ch, nil
+}
+
+func TestNativeModel_StreamContextCancelStops(t *testing.T) {
+	nm := newNativeModel(blockingChatModel{})
+	ctx, cancel := context.WithCancel(context.Background())
+	ch, _ := nm.Stream(ctx, nil, nil)
+	<-ch // first chunk
+	cancel()
+	for range ch { // must close without hanging
+	}
+}
+
+func TestStreamAdapter_NoDoneChunkIsError(t *testing.T) {
+	m := scriptedModel{chunks: []model.Chunk{{Delta: "x", DeltaKind: event.DeltaText}}} // no Done/Err
+	_, err := ToAC(m).Generate(context.Background(), nil, nil)
+	if err == nil {
+		t.Fatal("want error when stream ends without a done chunk")
+	}
+}
