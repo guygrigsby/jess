@@ -210,6 +210,10 @@ do not drive a single Session from two goroutines at once.
 - New packages: `jess` root, `jess/message`, `jess/event`, `jess/tool`,
   `jess/subagent`, `internal/agentcore`.
 - `examples/quickstart` rewritten to the facade.
+- `README.md` rewritten: it currently describes jess as a "library of parts"
+  (the host wires the `agentcore.Agent`); the cutover replaces that with the
+  facade model (`jess.New` -> `Agent`/`Session`), the new package map, and the
+  subagent Pool. Done in Phase 4 so it never documents an unbuilt API.
 - CHANGELOG records the break. No deprecation shims (pre-1.0).
 
 ## Alternatives considered
