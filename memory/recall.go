@@ -36,6 +36,13 @@ type SimpleRecaller struct {
 	// WithRequireMatch so the keyword path is gated like the
 	// vector path's WithMinScore floor.
 	RequireMatch bool
+
+	// Stopwords are dropped from the hint before scoring. Without
+	// them, common words ("the", "what", "did") produce spurious
+	// substring matches that pull in unrelated memories. Empty by
+	// default; set via WithStopwords (DefaultStopwords is a ready
+	// English list).
+	Stopwords map[string]struct{}
 }
 
 // SimpleRecallerOption configures a SimpleRecaller.
@@ -45,6 +52,33 @@ type SimpleRecallerOption func(*SimpleRecaller)
 // overlap with the hint, instead of padding results by recency.
 func WithRequireMatch() SimpleRecallerOption {
 	return func(r *SimpleRecaller) { r.RequireMatch = true }
+}
+
+// WithStopwords drops the given words (lowercased) from the hint
+// before scoring. Pass DefaultStopwords for a standard English set,
+// optionally extended with domain terms.
+func WithStopwords(words ...string) SimpleRecallerOption {
+	return func(r *SimpleRecaller) {
+		r.Stopwords = make(map[string]struct{}, len(words))
+		for _, w := range words {
+			r.Stopwords[strings.ToLower(w)] = struct{}{}
+		}
+	}
+}
+
+// DefaultStopwords is a standard English stopword list (3+ chars,
+// since shorter tokens are already dropped by MinTokenLength). Common
+// query glue that otherwise causes spurious keyword matches.
+var DefaultStopwords = []string{
+	"the", "and", "are", "was", "were", "been", "being", "for", "with",
+	"from", "that", "this", "these", "those", "its", "did", "does", "done",
+	"what", "which", "who", "whom", "whose", "when", "where", "why", "how",
+	"can", "could", "will", "would", "should", "shall", "may", "might",
+	"must", "have", "has", "had", "you", "your", "yours", "our", "ours",
+	"they", "them", "their", "his", "her", "hers", "she", "him",
+	"about", "into", "than", "then", "not", "yes", "get", "got", "just",
+	"any", "all", "some", "such", "out", "off", "over", "more", "most",
+	"there", "here", "also", "only", "very", "much", "many",
 }
 
 // NewSimpleRecaller returns a Recaller with conservative defaults
@@ -149,7 +183,10 @@ func (r *SimpleRecaller) tokenize(s string) []string {
 	var cur []byte
 	flush := func() {
 		if len(cur) >= min {
-			out = append(out, string(cur))
+			tok := string(cur)
+			if _, stop := r.Stopwords[tok]; !stop {
+				out = append(out, tok)
+			}
 		}
 		cur = cur[:0]
 	}
