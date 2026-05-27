@@ -233,13 +233,35 @@ do not drive a single Session from two goroutines at once.
   `Store` and `skill.Set` are already concurrency-safe. One Agent can back many
   Sessions across goroutines.
 - **Session**: one active Run at a time. A second `Prompt` while a Run is in
-  flight returns `ErrRunInProgress`. Intentional in-run input uses
-  `Session.Steer(msg)` (inject into the running loop) or `Session.FollowUp(msg)`
-  (queue for after), surfacing agentcore's real capabilities as first-class jess
-  methods. Reads are safe under lock.
+  flight returns `ErrRunInProgress`. Intentional in-run input goes through the
+  queue/preempt mechanism below. Reads are safe under lock.
 - **Stream**: single consumer per Session (idiomatic Go). Every producer (main
   translator and all subagent mergers) is serialized inside jess.
 - **Subagents**: fully owned by jess as described in Decision 5.
+
+#### Queuing and preemption (mid-run input)
+
+jess wraps `agentcore.Agent`, which owns two message queues and a hard
+interrupt; the Session surfaces all three as first-class methods that accept a
+jess `message.Message` (translated to the harness via `messagesToAC`):
+
+- **`Session.FollowUp(msg)`** -> `Agent.FollowUp`: appended to a follow-up queue
+  and processed *after* the current run finishes. Does not disturb the run in
+  flight.
+- **`Session.Steer(msg)`** -> `Agent.Steer`: appended to a steering queue that
+  the loop pulls at safe points (turn start, between/after tools; it also stops
+  not-yet-started tools). Soft preemption — it redirects the agent without
+  killing the in-flight inference.
+- **`Session.Abort()`** -> `Agent.Abort`: hard preemption via context
+  cancellation (Decision on the model boundary). Cancels the in-flight stream
+  mid-token, emits an interrupt marker, and any queued steer/follow-up messages
+  are processed on continuation.
+
+The model layer is intentionally untouched by queuing/steering: only `Abort`
+(ctx) reaches `model.Model.Stream`. Steering and follow-up are loop-level
+message injection, owned by agentcore and delegated through the Session.
+`ClearSteeringQueue`/`ClearFollowUpQueue`/`HasQueuedMessages` are surfaced too,
+for hosts that manage the queues directly.
 
 ### 7. Error handling (preserve the cardinal invariant)
 
