@@ -64,6 +64,45 @@ func messagesToAC(msgs []message.Message) []ac.Message {
 	return out
 }
 
+// messageFromAC translates a single agentcore message to a jess message. A
+// RoleTool message is reconstructed into one BlockToolResult using the
+// tool_call_id/is_error metadata that ToolResultMsg stored. Image and
+// tool-reference blocks (no jess equivalent) are dropped.
+func messageFromAC(m ac.Message) message.Message {
+	if m.Role == ac.RoleTool {
+		toolID, _ := m.Metadata["tool_call_id"].(string)
+		isErr, _ := m.Metadata["is_error"].(bool)
+		var result []byte
+		for _, b := range m.Content {
+			if b.Type == ac.ContentText {
+				result = []byte(b.Text)
+				break
+			}
+		}
+		return message.Message{Role: message.RoleTool, Content: []message.ContentBlock{{
+			Kind: message.BlockToolResult, ToolID: toolID, Result: result, IsError: isErr,
+		}}}
+	}
+	blocks := make([]message.ContentBlock, 0, len(m.Content))
+	for _, b := range m.Content {
+		switch b.Type {
+		case ac.ContentText:
+			blocks = append(blocks, message.ContentBlock{Kind: message.BlockText, Text: b.Text})
+		case ac.ContentThinking:
+			blocks = append(blocks, message.ContentBlock{Kind: message.BlockThinking, Text: b.Thinking})
+		case ac.ContentToolCall:
+			if b.ToolCall != nil {
+				blocks = append(blocks, message.ContentBlock{
+					Kind: message.BlockToolCall, ToolID: b.ToolCall.ID,
+					ToolName: b.ToolCall.Name, Args: b.ToolCall.Args,
+				})
+			}
+		default: // ContentImage, ContentToolRef: no jess equivalent, drop
+		}
+	}
+	return message.Message{Role: roleFromAC(m.Role), Content: blocks}
+}
+
 // blockToAC translates a single non-tool-result content block.
 func blockToAC(b message.ContentBlock) ac.ContentBlock {
 	switch b.Kind {

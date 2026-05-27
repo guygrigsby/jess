@@ -52,6 +52,40 @@ func TestMessagesToAC_ToolResultBecomesToolMessage(t *testing.T) {
 	}
 }
 
+func TestMessageFromAC_AssistantBlocks(t *testing.T) {
+	in := ac.Message{Role: ac.RoleAssistant, Content: []ac.ContentBlock{
+		ac.TextBlock("hi"),
+		ac.ThinkingBlock("hmm"),
+		ac.ToolCallBlock(ac.ToolCall{ID: "c1", Name: "search", Args: []byte(`{"q":"x"}`)}),
+	}}
+	got := messageFromAC(in)
+	if got.Role != message.RoleAssistant || len(got.Content) != 3 {
+		t.Fatalf("got %+v", got)
+	}
+	if got.Content[0].Kind != message.BlockText || got.Content[0].Text != "hi" {
+		t.Errorf("b0 = %+v", got.Content[0])
+	}
+	if got.Content[1].Kind != message.BlockThinking || got.Content[1].Text != "hmm" {
+		t.Errorf("b1 = %+v", got.Content[1])
+	}
+	if got.Content[2].Kind != message.BlockToolCall || got.Content[2].ToolID != "c1" ||
+		got.Content[2].ToolName != "search" {
+		t.Errorf("b2 = %+v", got.Content[2])
+	}
+}
+
+func TestMessageFromAC_ToolResult(t *testing.T) {
+	in := ac.ToolResultMsg("c1", []byte(`{"ok":true}`), true)
+	got := messageFromAC(in)
+	if got.Role != message.RoleTool || len(got.Content) != 1 {
+		t.Fatalf("got %+v", got)
+	}
+	b := got.Content[0]
+	if b.Kind != message.BlockToolResult || b.ToolID != "c1" || !b.IsError || string(b.Result) != `{"ok":true}` {
+		t.Errorf("result block = %+v", b)
+	}
+}
+
 func TestRoleRoundTrip(t *testing.T) {
 	tests := []struct {
 		jess message.Role
