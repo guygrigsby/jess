@@ -8,6 +8,7 @@ import (
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/model"
 	ac "github.com/voocel/agentcore"
+	"github.com/voocel/agentcore/llm"
 )
 
 // toolSpecFromAC converts an agentcore ToolSpec to a jess ToolSpec. agentcore's
@@ -42,16 +43,89 @@ func assistantMessageToAC(m message.Message, u model.Usage, stop string) ac.Mess
 	return acMsg
 }
 
-// nativeModel is fleshed out in the next task (cloud passthrough). The stub
-// here satisfies model.Model so ToAC's type assertion compiles; the next task
-// replaces these with real implementations.
+// nativeModel is a model.Model backed directly by an agentcore.ChatModel
+// (jess-provided cloud models). ToAC unwraps it for zero-overhead passthrough;
+// its Stream bridges the harness stream to jess Chunks so it is also a valid
+// standalone model.Model.
 type nativeModel struct{ cm ac.ChatModel }
 
-func (nativeModel) SupportsTools() bool { return true }
-func (nativeModel) Stream(_ context.Context, _ []message.Message, _ []model.ToolSpec) (<-chan model.Chunk, error) {
-	ch := make(chan model.Chunk)
-	close(ch)
-	return ch, nil
+func newNativeModel(cm ac.ChatModel) nativeModel { return nativeModel{cm: cm} }
+
+func (n nativeModel) SupportsTools() bool { return n.cm.SupportsTools() }
+
+func (n nativeModel) Stream(ctx context.Context, msgs []message.Message, tools []model.ToolSpec) (<-chan model.Chunk, error) {
+	acMsgs := messagesToAC(msgs)
+	acTools := make([]ac.ToolSpec, len(tools))
+	for i, t := range tools {
+		acTools[i] = ac.ToolSpec{Name: t.Name, Description: t.Description, Parameters: t.Schema}
+	}
+	stream, err := n.cm.GenerateStream(ctx, acMsgs, acTools)
+	if err != nil {
+		return nil, err
+	}
+	out := make(chan model.Chunk)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-stream:
+				if !ok {
+					return
+				}
+				c, emit := chunkFromAC(ev)
+				if !emit {
+					continue
+				}
+				select {
+				case <-ctx.Done():
+					return
+				case out <- c:
+				}
+				if c.Done || c.Err != nil {
+					return
+				}
+			}
+		}
+	}()
+	return out, nil
+}
+
+// chunkFromAC maps an agentcore StreamEvent to a jess Chunk. start/end framing
+// events have no jess equivalent and return emit=false.
+func chunkFromAC(ev ac.StreamEvent) (model.Chunk, bool) {
+	switch ev.Type {
+	case ac.StreamEventTextDelta:
+		return model.Chunk{Delta: ev.Delta, DeltaKind: event.DeltaText}, true
+	case ac.StreamEventThinkingDelta:
+		return model.Chunk{Delta: ev.Delta, DeltaKind: event.DeltaThinking}, true
+	case ac.StreamEventToolCallDelta:
+		return model.Chunk{Delta: ev.Delta, DeltaKind: event.DeltaToolCall}, true
+	case ac.StreamEventDone:
+		// Prefer the event-level StopReason (populated by all agentcore adapters);
+		// fall back to the message's own StopReason for callers that only set one.
+		stop := ev.StopReason
+		if stop == "" {
+			stop = ev.Message.StopReason
+		}
+		return model.Chunk{Done: true, Message: messageFromAC(ev.Message), StopReason: string(stop)}, true
+	case ac.StreamEventError:
+		return model.Chunk{Err: ev.Err}, true
+	default:
+		return model.Chunk{}, false
+	}
+}
+
+// NewLiteLLMModel builds a litellm-backed cloud model and returns it as a
+// model.Model (a native passthrough). provider/modelID are litellm identifiers
+// (e.g. "openai","gpt-4o"); options configure the underlying adapter.
+func NewLiteLLMModel(provider, modelID string, opts ...llm.ModelOption) (model.Model, error) {
+	cm, err := llm.NewModel(provider, modelID, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return newNativeModel(cm), nil
 }
 
 // ToAC adapts a jess model.Model into an agentcore.ChatModel for the loop. If m

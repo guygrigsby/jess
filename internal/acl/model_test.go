@@ -130,3 +130,51 @@ func TestStreamAdapter_ContextCancelStops(t *testing.T) {
 	for range stream { // must close without hanging
 	}
 }
+
+// fakeChatModel is an agentcore.ChatModel emitting a fixed StreamEvent script.
+type fakeChatModel struct{ events []ac.StreamEvent }
+
+func (fakeChatModel) SupportsTools() bool { return true }
+func (m fakeChatModel) GenerateStream(ctx context.Context, _ []ac.Message, _ []ac.ToolSpec, _ ...ac.CallOption) (<-chan ac.StreamEvent, error) {
+	ch := make(chan ac.StreamEvent, len(m.events))
+	for _, e := range m.events {
+		ch <- e
+	}
+	close(ch)
+	return ch, nil
+}
+func (m fakeChatModel) Generate(context.Context, []ac.Message, []ac.ToolSpec, ...ac.CallOption) (*ac.LLMResponse, error) {
+	return &ac.LLMResponse{}, nil
+}
+
+func TestNativeModel_ToACUnwrapsToUnderlying(t *testing.T) {
+	// Use a pointer so the interface value is comparable (slice-bearing structs
+	// are not; comparing them directly panics at runtime).
+	cm := &fakeChatModel{}
+	nm := newNativeModel(cm)
+	if ToAC(nm) != ac.ChatModel(cm) {
+		t.Error("ToAC(nativeModel) must return the underlying ChatModel (passthrough)")
+	}
+}
+
+func TestNativeModel_StreamBridgesToChunks(t *testing.T) {
+	cm := fakeChatModel{events: []ac.StreamEvent{
+		{Type: ac.StreamEventTextDelta, Delta: "hi"},
+		{Type: ac.StreamEventDone, Message: ac.Message{Role: ac.RoleAssistant, Content: []ac.ContentBlock{ac.TextBlock("hi")}}, StopReason: ac.StopReason("stop")},
+	}}
+	nm := newNativeModel(cm)
+	ch, err := nm.Stream(context.Background(), nil, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []model.Chunk
+	for c := range ch {
+		got = append(got, c)
+	}
+	if len(got) != 2 || got[0].Delta != "hi" || got[0].DeltaKind != event.DeltaText {
+		t.Fatalf("chunks = %+v", got)
+	}
+	if !got[1].Done || got[1].Message.Text() != "hi" || got[1].StopReason != "stop" {
+		t.Errorf("final chunk = %+v", got[1])
+	}
+}
