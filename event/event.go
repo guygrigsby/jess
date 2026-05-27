@@ -19,6 +19,17 @@ const (
 	KindError        EventKind = "error"
 )
 
+// DeltaKind classifies the text carried by a KindMessageDelta event so a
+// streaming consumer can distinguish assistant prose from reasoning or
+// streamed tool-call arguments.
+type DeltaKind string
+
+const (
+	DeltaText     DeltaKind = ""         // regular assistant text
+	DeltaThinking DeltaKind = "thinking" // model reasoning/thinking
+	DeltaToolCall DeltaKind = "toolcall" // streamed tool-call argument JSON
+)
+
 // RunSummary is the factual outcome of a single run.
 type RunSummary struct {
 	Turns     int
@@ -35,13 +46,15 @@ type Event struct {
 	Kind      EventKind
 	AgentPath []string
 
-	Delta   string          // KindMessageDelta
-	Tool    string          // KindToolStart, KindToolEnd
-	Args    json.RawMessage // KindToolStart
-	Result  json.RawMessage // KindToolEnd
-	IsError bool            // KindToolEnd
-	Err     error           // KindError
-	Summary *RunSummary     // KindRunEnd
+	Delta      string          // KindMessageDelta
+	DeltaKind  DeltaKind       // KindMessageDelta: classifies Delta
+	Tool       string          // KindToolStart, KindToolEnd: tool name
+	ToolCallID string          // KindToolStart, KindToolEnd: unique call ID (correlates start/end)
+	Args       json.RawMessage // KindToolStart
+	Result     json.RawMessage // KindToolEnd
+	IsError    bool            // KindToolEnd
+	Err        error           // KindError
+	Summary    *RunSummary     // KindRunEnd
 }
 
 // IsSubagent reports whether the event came from a subagent (non-empty

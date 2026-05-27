@@ -190,6 +190,22 @@ func TestEventFromAC(t *testing.T) {
 	}
 }
 
+func TestEventFromAC_ToolCorrelationAndDeltaKind(t *testing.T) {
+	start, _ := EventFromAC(ac.Event{Type: ac.EventToolExecStart, Tool: "search", ToolID: "call_7"})
+	end, _ := EventFromAC(ac.Event{Type: ac.EventToolExecEnd, Tool: "search", ToolID: "call_7"})
+	if start.ToolCallID != "call_7" || end.ToolCallID != "call_7" {
+		t.Errorf("tool call id not propagated: start=%q end=%q", start.ToolCallID, end.ToolCallID)
+	}
+	think, _ := EventFromAC(ac.Event{Type: ac.EventMessageUpdate, Delta: "x", DeltaKind: ac.DeltaThinking})
+	if think.DeltaKind != event.DeltaThinking {
+		t.Errorf("delta kind = %q, want thinking", think.DeltaKind)
+	}
+	txt, _ := EventFromAC(ac.Event{Type: ac.EventMessageUpdate, Delta: "x"})
+	if txt.DeltaKind != event.DeltaText {
+		t.Errorf("default delta kind = %q, want text(empty)", txt.DeltaKind)
+	}
+}
+
 func TestEventFromAC_RunEndSummary(t *testing.T) {
 	got, ok := EventFromAC(ac.Event{Type: ac.EventAgentEnd, Summary: &ac.RunSummary{TurnCount: 3, ToolCalls: 2, EndReason: ac.EndReasonMaxTurns}})
 	if !ok || got.Summary == nil {

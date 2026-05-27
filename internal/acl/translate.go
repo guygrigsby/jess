@@ -160,11 +160,11 @@ func EventFromAC(e ac.Event) (event.Event, bool) {
 	case ac.EventTurnStart:
 		return event.Event{Kind: event.KindTurnStart}, true
 	case ac.EventMessageUpdate:
-		return event.Event{Kind: event.KindMessageDelta, Delta: e.Delta}, true
+		return event.Event{Kind: event.KindMessageDelta, Delta: e.Delta, DeltaKind: deltaKindFromAC(e.DeltaKind)}, true
 	case ac.EventToolExecStart:
-		return event.Event{Kind: event.KindToolStart, Tool: e.Tool, Args: e.Args}, true
+		return event.Event{Kind: event.KindToolStart, Tool: e.Tool, ToolCallID: e.ToolID, Args: e.Args}, true
 	case ac.EventToolExecEnd:
-		return event.Event{Kind: event.KindToolEnd, Tool: e.Tool, Result: e.Result, IsError: e.IsError}, true
+		return event.Event{Kind: event.KindToolEnd, Tool: e.Tool, ToolCallID: e.ToolID, Result: e.Result, IsError: e.IsError}, true
 	case ac.EventTurnEnd:
 		return event.Event{Kind: event.KindTurnEnd}, true
 	case ac.EventAgentEnd:
@@ -173,6 +173,20 @@ func EventFromAC(e ac.Event) (event.Event, bool) {
 		return event.Event{Kind: event.KindError, Err: e.Err}, true
 	default:
 		return event.Event{}, false
+	}
+}
+
+// deltaKindFromAC maps agentcore's message-delta classification to jess's. The
+// string values coincide ("", "thinking", "toolcall"), but the mapping is
+// explicit so a divergence is a test failure rather than a silent mismatch.
+func deltaKindFromAC(d ac.DeltaKind) event.DeltaKind {
+	switch d {
+	case ac.DeltaThinking:
+		return event.DeltaThinking
+	case ac.DeltaToolCall:
+		return event.DeltaToolCall
+	default:
+		return event.DeltaText
 	}
 }
 
