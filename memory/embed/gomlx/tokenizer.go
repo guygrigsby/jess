@@ -43,7 +43,7 @@ func newTokenizer(vocabPath string) (*tokenizer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("jess/memory/embed/gomlx: open vocab %s: %w", vocabPath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only; close error is not actionable
 	t := &tokenizer{vocab: map[string]int{}}
 	scanner := bufio.NewScanner(f)
 	idx := 0

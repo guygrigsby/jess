@@ -1,0 +1,41 @@
+# golangci-lint: bug-finding / correctness static analysis only.
+# No formatting or naming/style linters — `gofmt` stays as `make fmt`,
+# not gated here. staticcheck's ST (stylecheck) and QF (quickfix) families
+# are disabled below for the same reason; SA (bugs) + S (simplify) stay.
+version: "2"
+
+linters:
+  default: none
+  enable:
+    - govet         # standard vet: printf, copylocks, lostcancel, etc.
+    - staticcheck   # SA bug checks + gosimple (ST/QF disabled in settings)
+    - errcheck      # unchecked errors
+    - ineffassign   # ineffectual assignments
+    - unused        # unused code
+    - errorlint     # wrong error wrapping/comparison (errors.Is/As)
+    - bodyclose     # unclosed HTTP response bodies (resource leaks)
+    - durationcheck # nonsensical time.Duration arithmetic
+    - makezero      # append to a make() with non-zero length
+    - asasalint     # []any accidentally passed as variadic any
+    # nilerr intentionally NOT enabled: this codebase's idioms (plugins
+    # surface errors via IsError in the tool result and return a nil Go
+    # error; redact/export paths degrade to raw bytes on parse failure)
+    # are all flagged as false positives.
+  settings:
+    staticcheck:
+      checks:
+        - all
+        - -ST1* # naming/comment/style conventions — not "bugs"
+        - -QF1* # quickfix refactor suggestions — style-ish
+    errcheck:
+      # Unchecked writes to output writers / flushes are benign here; the
+      # error has nowhere useful to go. Keep errcheck for meaningful returns.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+        - (*bufio.Writer).Flush
+        - (*text/tabwriter.Writer).Flush
