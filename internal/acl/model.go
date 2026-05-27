@@ -109,12 +109,20 @@ func chunkFromAC(ev ac.StreamEvent) (model.Chunk, bool) {
 		if stop == "" {
 			stop = ev.Message.StopReason
 		}
-		return model.Chunk{Done: true, Message: messageFromAC(ev.Message), StopReason: string(stop)}, true
+		return model.Chunk{Done: true, Message: messageFromAC(ev.Message), Usage: usageFromAC(ev.Message.Usage), StopReason: string(stop)}, true
 	case ac.StreamEventError:
 		return model.Chunk{Err: ev.Err}, true
 	default:
 		return model.Chunk{}, false
 	}
+}
+
+// usageFromAC maps agentcore token usage to jess Usage (nil-safe).
+func usageFromAC(u *ac.Usage) model.Usage {
+	if u == nil {
+		return model.Usage{}
+	}
+	return model.Usage{Input: u.Input, Output: u.Output, TotalTokens: u.TotalTokens}
 }
 
 // NewLiteLLMModel builds a litellm-backed cloud model and returns it as a

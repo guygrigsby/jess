@@ -72,3 +72,14 @@ func TestOnce_EmitsErrChunk(t *testing.T) {
 		t.Fatalf("want error chunk, got %+v", c)
 	}
 }
+
+func TestOnce_NilResponseBecomesErrChunk(t *testing.T) {
+	m := Once(false, func(context.Context, []message.Message, []ToolSpec) (*Response, error) {
+		return nil, nil // buggy fn: nil response, nil error
+	})
+	ch, _ := m.Stream(context.Background(), nil, nil)
+	c := <-ch
+	if c.Err == nil || c.Done {
+		t.Fatalf("nil response must yield an error chunk, got %+v", c)
+	}
+}

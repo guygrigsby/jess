@@ -160,7 +160,7 @@ func TestNativeModel_ToACUnwrapsToUnderlying(t *testing.T) {
 func TestNativeModel_StreamBridgesToChunks(t *testing.T) {
 	cm := fakeChatModel{events: []ac.StreamEvent{
 		{Type: ac.StreamEventTextDelta, Delta: "hi"},
-		{Type: ac.StreamEventDone, Message: ac.Message{Role: ac.RoleAssistant, Content: []ac.ContentBlock{ac.TextBlock("hi")}}, StopReason: ac.StopReason("stop")},
+		{Type: ac.StreamEventDone, Message: ac.Message{Role: ac.RoleAssistant, Content: []ac.ContentBlock{ac.TextBlock("hi")}, Usage: &ac.Usage{Input: 1, Output: 2, TotalTokens: 3}}, StopReason: ac.StopReason("stop")},
 	}}
 	nm := newNativeModel(cm)
 	ch, err := nm.Stream(context.Background(), nil, nil)
@@ -176,6 +176,9 @@ func TestNativeModel_StreamBridgesToChunks(t *testing.T) {
 	}
 	if !got[1].Done || got[1].Message.Text() != "hi" || got[1].StopReason != "stop" {
 		t.Errorf("final chunk = %+v", got[1])
+	}
+	if got[1].Usage.TotalTokens != 3 || got[1].Usage.Input != 1 {
+		t.Errorf("usage not propagated: %+v", got[1].Usage)
 	}
 }
 

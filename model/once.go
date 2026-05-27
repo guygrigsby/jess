@@ -2,6 +2,7 @@ package model
 
 import (
 	"context"
+	"errors"
 
 	"github.com/guygrigsby/jess/message"
 )
@@ -32,6 +33,10 @@ func (m onceModel) Stream(ctx context.Context, msgs []message.Message, tools []T
 		resp, err := m.fn(ctx, msgs, tools)
 		if err != nil {
 			ch <- Chunk{Err: err}
+			return
+		}
+		if resp == nil {
+			ch <- Chunk{Err: errors.New("model: GenerateFunc returned a nil response and nil error")}
 			return
 		}
 		ch <- Chunk{Done: true, Message: resp.Message, Usage: resp.Usage, StopReason: resp.StopReason}
