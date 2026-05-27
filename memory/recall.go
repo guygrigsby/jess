@@ -27,12 +27,34 @@ type SimpleRecaller struct {
 	// MinTokenLength filters short tokens out of the text-overlap
 	// score. Default 3 — "is", "of", "and" don't help retrieval.
 	MinTokenLength int
+
+	// RequireMatch drops entries with no lexical signal (score 0:
+	// no token or tag overlap with the hint). Off by default, so a
+	// hint that tokenizes to nothing (e.g. "Oh hi!") otherwise
+	// returns the most recent entries by recency — irrelevant
+	// recall. Hosts wanting strict relevance enable it via
+	// WithRequireMatch so the keyword path is gated like the
+	// vector path's WithMinScore floor.
+	RequireMatch bool
+}
+
+// SimpleRecallerOption configures a SimpleRecaller.
+type SimpleRecallerOption func(*SimpleRecaller)
+
+// WithRequireMatch makes the recaller drop entries with no token/tag
+// overlap with the hint, instead of padding results by recency.
+func WithRequireMatch() SimpleRecallerOption {
+	return func(r *SimpleRecaller) { r.RequireMatch = true }
 }
 
 // NewSimpleRecaller returns a Recaller with conservative defaults
 // (no Kind filter, MinTokenLength=3).
-func NewSimpleRecaller() *SimpleRecaller {
-	return &SimpleRecaller{MinTokenLength: 3}
+func NewSimpleRecaller(opts ...SimpleRecallerOption) *SimpleRecaller {
+	r := &SimpleRecaller{MinTokenLength: 3}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
 }
 
 // Recall returns the top max entries for the agent. ConversationHint
@@ -74,6 +96,10 @@ func (r *SimpleRecaller) Recall(ctx context.Context, store Store, agentID string
 	out := make([]scored, 0, len(candidates))
 	for _, e := range candidates {
 		s := r.score(e, tokens)
+		if r.RequireMatch && s == 0 {
+			// No lexical signal — skip rather than pad by recency.
+			continue
+		}
 		out = append(out, scored{entry: e, score: s})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
