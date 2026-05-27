@@ -1,9 +1,12 @@
 package acl
 
 import (
+	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/guygrigsby/jess/message"
+	"github.com/guygrigsby/jess/tool"
 	ac "github.com/voocel/agentcore"
 )
 
@@ -105,5 +108,35 @@ func TestRoleRoundTrip(t *testing.T) {
 				t.Errorf("roleFromAC(%q) = %q, want %q", tt.acr, got, tt.jess)
 			}
 		})
+	}
+}
+
+type stubJessTool struct{}
+
+func (stubJessTool) Name() string           { return "echo" }
+func (stubJessTool) Description() string    { return "d" }
+func (stubJessTool) Schema() map[string]any { return map[string]any{"type": "object"} }
+func (stubJessTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return args, nil
+}
+
+func TestWrapTool(t *testing.T) {
+	var acTool ac.Tool = WrapTool(stubJessTool{})
+	if acTool.Name() != "echo" || acTool.Description() != "d" {
+		t.Fatalf("name/desc wrong: %q/%q", acTool.Name(), acTool.Description())
+	}
+	if acTool.Schema()["type"] != "object" {
+		t.Errorf("schema = %v", acTool.Schema())
+	}
+	got, err := acTool.Execute(context.Background(), json.RawMessage(`{"a":1}`))
+	if err != nil || string(got) != `{"a":1}` {
+		t.Errorf("execute = %s, %v", got, err)
+	}
+}
+
+func TestWrapTools(t *testing.T) {
+	got := WrapTools([]tool.Tool{stubJessTool{}, stubJessTool{}})
+	if len(got) != 2 {
+		t.Fatalf("want 2, got %d", len(got))
 	}
 }

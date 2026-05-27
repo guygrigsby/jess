@@ -1,7 +1,11 @@
 package acl
 
 import (
+	"context"
+	"encoding/json"
+
 	"github.com/guygrigsby/jess/message"
+	"github.com/guygrigsby/jess/tool"
 	ac "github.com/voocel/agentcore"
 )
 
@@ -113,4 +117,27 @@ func blockToAC(b message.ContentBlock) ac.ContentBlock {
 	default: // BlockText (and any unknown kind) render as text
 		return ac.TextBlock(b.Text)
 	}
+}
+
+// wrappedTool adapts a jess tool.Tool to agentcore.Tool. The interfaces are
+// structurally identical, so this delegates field-for-field.
+type wrappedTool struct{ t tool.Tool }
+
+func (w wrappedTool) Name() string           { return w.t.Name() }
+func (w wrappedTool) Description() string    { return w.t.Description() }
+func (w wrappedTool) Schema() map[string]any { return w.t.Schema() }
+func (w wrappedTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	return w.t.Execute(ctx, args)
+}
+
+// WrapTool adapts a single jess tool to an agentcore.Tool.
+func WrapTool(t tool.Tool) ac.Tool { return wrappedTool{t: t} }
+
+// WrapTools adapts a slice of jess tools to agentcore.Tool.
+func WrapTools(ts []tool.Tool) []ac.Tool {
+	out := make([]ac.Tool, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, WrapTool(t))
+	}
+	return out
 }
