@@ -1,5 +1,5 @@
 // Package message defines jess's conversation vocabulary, independent of any
-// agent harness. The anti-corruption layer (internal/agentcore) translates
+// agent harness. The anti-corruption layer (internal/acl) translates
 // these to and from the harness's message types; nothing here imports
 // agentcore.
 package message
