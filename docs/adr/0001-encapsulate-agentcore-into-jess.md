@@ -156,6 +156,20 @@ The agent loop is agentcore's, so the ACL wraps any `model.Model` into an
     underlying value already is an `agentcore.ChatModel`, so the ACL
     type-asserts and uses it directly — zero translation).
 
+Interruption is context cancellation. `Session.Abort()` calls
+`agentcore.Agent.Abort()`, which cancels the loop context; that same context is
+passed to `model.Model.Stream`, so a stream is interrupted mid-token, not
+merely dropped. The contract: `Stream` MUST honor `ctx` (on `ctx.Done()` stop
+producing and close its channel; it may emit a final `Err` chunk). The ACL
+stream bridge is cancellation-aware on both ends — it selects on `ctx.Done()`
+both when reading jess `Chunk`s and when sending agentcore `StreamEvent`s,
+since the loop stops reading on abort. An aborted run surfaces as
+`EventAgentEnd{EndReason: aborted}` -> `event.KindRunEnd` with
+`Summary.EndReason == "aborted"`. Cloud passthrough models honor `ctx`
+natively. (A ctx-aware bridge also unblocks a blocked `event.Stream.Send` on
+abort, the deferred Phase-1 concern that Phase 3's ctx-owning merger closes
+fully.)
+
 ### 4. Event stream: a thin domain stream, not go-eventlogger
 
 `jess/event.Stream` is a fan-out over a channel. `Session.Events()` returns
