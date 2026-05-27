@@ -221,6 +221,7 @@ func (s *ChromemStore) SearchVector(ctx context.Context, vec []float32, max int,
 	entries := make([]Entry, 0, len(results))
 	for _, r := range results {
 		e := metadataToEntry(r.ID, r.Metadata, r.Content)
+		e.Score = r.Similarity
 		if !textMatchesAndAgentScopeOK(e, filter) {
 			continue
 		}

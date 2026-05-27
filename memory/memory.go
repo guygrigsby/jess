@@ -65,6 +65,9 @@ type Entry struct {
 	// left it zero. Preserved on Recall so policies can prefer
 	// recency.
 	CreatedAt time.Time
+
+	// Score is the recall relevance (cosine similarity) on the vector path; 0 on non-vector recall. Not persisted.
+	Score float32
 }
 
 // Source captures where an Entry came from. Optional but strongly

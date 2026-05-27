@@ -102,6 +102,42 @@ func TestChromemStore_SearchVector_OrdersByCosine(t *testing.T) {
 	}
 }
 
+func TestSearchVector_PopulatesScore(t *testing.T) {
+	emb := newKeywordEmbedder([]string{"cat", "dog", "kitten", "feline"})
+	s, err := NewChromemStore(emb, ChromemOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, txt := range []string{"cat kitten feline", "dog"} {
+		if _, err := s.Append(context.Background(), Entry{Text: txt, AgentID: "a"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	queryVec, err := emb.Embed(context.Background(), "cat")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.SearchVector(context.Background(), queryVec, 2, Query{AgentID: "a"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("SearchVector returned %d entries, want 2", len(got))
+	}
+	scoreByText := map[string]float32{}
+	for _, e := range got {
+		scoreByText[e.Text] = e.Score
+	}
+	// cosine("cat kitten feline", "cat") = 1/sqrt(3) ≈ 0.577
+	if s := scoreByText["cat kitten feline"]; s < 0.5 {
+		t.Errorf("cat entry Score = %v, want ≈ 0.577 (>0.5)", s)
+	}
+	// cosine("dog", "cat") = 0
+	if s := scoreByText["dog"]; s != 0 {
+		t.Errorf("dog entry Score = %v, want 0", s)
+	}
+}
+
 func TestChromemStore_Dedupe_AvoidsReEmbed(t *testing.T) {
 	emb := newKeywordEmbedder([]string{"x"})
 	s, _ := NewChromemStore(emb, ChromemOptions{})
