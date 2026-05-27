@@ -71,6 +71,7 @@ jess/
 ├── message/            # Message, ContentBlock, Role
 ├── event/              # Event, EventKind, Stream
 ├── tool/               # Tool interface
+├── model/              # vendor-free Model interface, ToolSpec, Response, Usage
 ├── memory/             # existing; agentcore adapter removed
 ├── skill/              # renamed from skills/; agentcore.go removed
 ├── subagent/           # Spec, Pool, Task (orchestration)
@@ -122,9 +123,38 @@ sess   := agent.NewSession()          // advanced: explicit sessions
 run, _ := sess.Prompt(ctx, "hi")
 ```
 
-The model stays the host's (agentcore keeps the providers; jess does not
-reimplement them), but it enters through a jess option, not as a raw agentcore
-value, so even that crosses the ACL.
+**The model crosses the ACL as a vendor-free `model.Model` interface.** A raw
+`agentcore.ChatModel` cannot enter jess's public API: its methods speak
+agentcore message types, so accepting one would force the root `jess` package
+to import agentcore and break the boundary. Instead jess defines `model.Model`
+in jess-domain terms. This supports *all* model kinds, local and custom
+included: a host implements `model.Model` directly for an in-process or private
+model, while jess ships cloud constructors (e.g. `jess.LiteLLM(provider, model,
+…)`) that build agentcore's litellm-backed model inside `internal/acl` and
+return it as a `model.Model`.
+
+`model.Model` is streaming-first; `Stream` is the only primitive:
+
+    Stream(ctx, []message.Message, []ToolSpec) (<-chan Chunk, error)
+    SupportsTools() bool
+
+A `Chunk` carries an incremental `Delta` + `DeltaKind` (text/thinking/toolcall)
+and, on the final chunk, `Done=true` with the complete assistant `Message`.
+This keeps token-level streaming for local models (the event stream's whole
+point), not just cloud. A `model.Once(genFn)` helper wraps a one-shot function
+as a single-`Done`-chunk stream so trivial local models stay trivial.
+
+The agent loop is agentcore's, so the ACL wraps any `model.Model` into an
+`agentcore.ChatModel`:
+
+  - `ChatModel.GenerateStream` maps each jess `Chunk` to an agentcore
+    `StreamEvent` (`text_delta`/`thinking_delta`/`toolcall_delta`, then
+    `StreamEventDone{Message, StopReason}` — the shape agentcore's own litellm
+    adapter emits and the loop consumes).
+  - `ChatModel.Generate` is derived by draining the stream to the final message.
+  - For a jess-provided cloud model the wrapper is a native passthrough (the
+    underlying value already is an `agentcore.ChatModel`, so the ACL
+    type-asserts and uses it directly — zero translation).
 
 ### 4. Event stream: a thin domain stream, not go-eventlogger
 
