@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 
+	"github.com/guygrigsby/jess/event"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/tool"
 	ac "github.com/voocel/agentcore"
@@ -140,4 +141,37 @@ func WrapTools(ts []tool.Tool) []ac.Tool {
 		out = append(out, WrapTool(t))
 	}
 	return out
+}
+
+// EventFromAC flattens an agentcore lifecycle event into a jess event. The
+// second return is false for agentcore events with no jess equivalent
+// (message_start/end, tool_exec_update, retry); callers skip those.
+func EventFromAC(e ac.Event) (event.Event, bool) {
+	switch e.Type {
+	case ac.EventAgentStart:
+		return event.Event{Kind: event.KindRunStart}, true
+	case ac.EventTurnStart:
+		return event.Event{Kind: event.KindTurnStart}, true
+	case ac.EventMessageUpdate:
+		return event.Event{Kind: event.KindMessageDelta, Delta: e.Delta}, true
+	case ac.EventToolExecStart:
+		return event.Event{Kind: event.KindToolStart, Tool: e.Tool, Args: e.Args}, true
+	case ac.EventToolExecEnd:
+		return event.Event{Kind: event.KindToolEnd, Tool: e.Tool, Result: e.Result, IsError: e.IsError}, true
+	case ac.EventTurnEnd:
+		return event.Event{Kind: event.KindTurnEnd}, true
+	case ac.EventAgentEnd:
+		return event.Event{Kind: event.KindRunEnd, Summary: summaryFromAC(e.Summary)}, true
+	case ac.EventError:
+		return event.Event{Kind: event.KindError, Err: e.Err}, true
+	default:
+		return event.Event{}, false
+	}
+}
+
+func summaryFromAC(s *ac.RunSummary) *event.RunSummary {
+	if s == nil {
+		return nil
+	}
+	return &event.RunSummary{Turns: s.TurnCount, ToolCalls: s.ToolCalls, EndReason: string(s.EndReason)}
 }

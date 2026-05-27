@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	"github.com/guygrigsby/jess/event"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/tool"
 	ac "github.com/voocel/agentcore"
@@ -138,5 +139,46 @@ func TestWrapTools(t *testing.T) {
 	got := WrapTools([]tool.Tool{stubJessTool{}, stubJessTool{}})
 	if len(got) != 2 {
 		t.Fatalf("want 2, got %d", len(got))
+	}
+}
+
+func TestEventFromAC(t *testing.T) {
+	tests := []struct {
+		name   string
+		in     ac.Event
+		wantOK bool
+		want   event.EventKind
+	}{
+		{"agent start", ac.Event{Type: ac.EventAgentStart}, true, event.KindRunStart},
+		{"turn start", ac.Event{Type: ac.EventTurnStart}, true, event.KindTurnStart},
+		{"delta", ac.Event{Type: ac.EventMessageUpdate, Delta: "hi"}, true, event.KindMessageDelta},
+		{"tool start", ac.Event{Type: ac.EventToolExecStart, Tool: "search"}, true, event.KindToolStart},
+		{"tool end", ac.Event{Type: ac.EventToolExecEnd, Tool: "search", IsError: true}, true, event.KindToolEnd},
+		{"turn end", ac.Event{Type: ac.EventTurnEnd}, true, event.KindTurnEnd},
+		{"agent end", ac.Event{Type: ac.EventAgentEnd, Summary: &ac.RunSummary{TurnCount: 2, ToolCalls: 1, EndReason: ac.EndReasonStop}}, true, event.KindRunEnd},
+		{"error", ac.Event{Type: ac.EventError}, true, event.KindError},
+		{"message start dropped", ac.Event{Type: ac.EventMessageStart}, false, ""},
+		{"retry dropped", ac.Event{Type: ac.EventRetry}, false, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := EventFromAC(tt.in)
+			if ok != tt.wantOK {
+				t.Fatalf("ok = %v, want %v", ok, tt.wantOK)
+			}
+			if ok && got.Kind != tt.want {
+				t.Errorf("Kind = %q, want %q", got.Kind, tt.want)
+			}
+		})
+	}
+}
+
+func TestEventFromAC_RunEndSummary(t *testing.T) {
+	got, ok := EventFromAC(ac.Event{Type: ac.EventAgentEnd, Summary: &ac.RunSummary{TurnCount: 3, ToolCalls: 2, EndReason: ac.EndReasonMaxTurns}})
+	if !ok || got.Summary == nil {
+		t.Fatalf("ok=%v summary=%v", ok, got.Summary)
+	}
+	if got.Summary.Turns != 3 || got.Summary.ToolCalls != 2 || got.Summary.EndReason != "max_turns" {
+		t.Errorf("summary = %+v", got.Summary)
 	}
 }
