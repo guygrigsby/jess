@@ -37,6 +37,46 @@ jobs:
         # separate workflow when we want pre-release verification.
         run: go test -race -timeout 5m ./...
 
+  lint:
+    name: golangci-lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          # golangci-lint-action manages its own build/analysis cache;
+          # disable setup-go's to avoid the documented cache conflict.
+          cache: false
+
+      - name: golangci-lint
+        uses: golangci/golangci-lint-action@v9
+        with:
+          # Pinned for reproducible lint results: a floating version can
+          # surface new findings that break unrelated PRs. Bump deliberately.
+          version: v2.12.2
+
+  license-audit:
+    name: license-audit
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26'
+          cache: true
+
+      - name: license-audit
+        # Blocking: a GPL/AGPL dep violates the project license policy
+        # (MIT/Apache-2.0/MPL-2.0/BSD only) and must fail the PR.
+        run: make license-audit
+
   govulncheck:
     name: govulncheck
     runs-on: ubuntu-latest

@@ -30,6 +30,21 @@ go test -race ./...
 `-race` catches concurrent-access bugs in the stores and recallers
 that show up under real workloads.
 
+If you touch `go.mod` / `go.sum`, also run the dependency license
+audit (CI enforces it):
+
+```bash
+make license-audit
+```
+
+It fails on any GPL/AGPL-class dependency. Enable the versioned
+pre-commit hook once per clone so the audit runs automatically when
+you stage `go.mod` / `go.sum`:
+
+```bash
+git config core.hooksPath .githooks
+```
+
 For PRs touching the GoMLX embedder, also run:
 
 ```bash

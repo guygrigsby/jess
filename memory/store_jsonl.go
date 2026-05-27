@@ -187,7 +187,7 @@ func (s *JSONLStore) readAllLocked() ([]Entry, error) {
 		}
 		return nil, fmt.Errorf("memory: open %s: %w", s.path, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }() // read-only; close error is not actionable
 	scanner := bufio.NewScanner(f)
 	// JSONL records can be larger than the default 64KB buffer when
 	// memory text approaches the documented 8KB cap on Entry.Text
@@ -280,7 +280,7 @@ func (s *JSONLStore) findLatestLocked(id string) (*Entry, error) {
 // appendRecordLocked encodes e as a single JSON line and appends it
 // to the file. Empty Text + Tags == tombstone (treated as Deleted at
 // read time).
-func (s *JSONLStore) appendRecordLocked(e Entry) error {
+func (s *JSONLStore) appendRecordLocked(e Entry) (err error) {
 	if err := os.MkdirAll(filepath.Dir(s.path), 0o700); err != nil {
 		return fmt.Errorf("memory: mkdir %s: %w", filepath.Dir(s.path), err)
 	}
@@ -288,7 +288,13 @@ func (s *JSONLStore) appendRecordLocked(e Entry) error {
 	if err != nil {
 		return fmt.Errorf("memory: open %s: %w", s.path, err)
 	}
-	defer f.Close()
+	// Write path: a failed Close can mean the final flush to the OS lost
+	// data, so surface it (unless an earlier error already takes priority).
+	defer func() {
+		if cerr := f.Close(); cerr != nil && err == nil {
+			err = fmt.Errorf("memory: close %s: %w", s.path, cerr)
+		}
+	}()
 	rec := jsonlRecord{
 		ID:        e.ID,
 		Kind:      e.Kind,
@@ -337,7 +343,7 @@ func (s *JSONLStore) Compact(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("memory: create tmp: %w", err)
 	}
-	defer os.Remove(tmp.Name())
+	defer func() { _ = os.Remove(tmp.Name()) }() // best-effort cleanup; gone after a successful rename
 	w := bufio.NewWriter(tmp)
 	for _, e := range entries {
 		rec := jsonlRecord{

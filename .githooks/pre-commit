@@ -1,0 +1,24 @@
+#!/bin/sh
+# Versioned pre-commit hook. Enable once per clone with:
+#
+#     git config core.hooksPath .githooks
+#
+# Checks run only when relevant files are staged, so most commits stay
+# fast:
+#   - golangci-lint when any .go file is staged
+#   - license audit when go.mod / go.sum is staged (deps can't change
+#     without one of those changing)
+
+set -e
+
+staged="$(git diff --cached --name-only)"
+
+if echo "$staged" | grep -qE '\.go$'; then
+	echo ".go files changed; running golangci-lint..."
+	make lint
+fi
+
+if echo "$staged" | grep -qE '^go\.(mod|sum)$'; then
+	echo "go.mod/go.sum changed; running license audit..."
+	make license-audit
+fi
