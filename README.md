@@ -167,6 +167,34 @@ line.
 
 [gomlx-go]: https://github.com/gomlx/gomlx#purego-backend
 
+## Development
+
+Make targets wrap the checks CI runs:
+
+```bash
+make test           # go test -race ./...
+make vet            # go vet ./...
+make lint           # golangci-lint (config in .golangci.yml)
+make license-audit  # go-licenses: fail on any GPL/AGPL-class dep
+```
+
+`lint` and `license-audit` need nothing installed beyond the Go
+toolchain (both fall back to `go run` at a pinned version).
+
+CI (`.github/workflows/test.yml`) runs all four on every push and PR
+to `main`, plus a non-blocking `govulncheck`. Tests, lint, and the
+license audit are blocking; a GPL/AGPL dependency fails the build.
+
+A versioned pre-commit hook runs lint when `.go` files are staged and
+the license audit when `go.mod` / `go.sum` change. Opt in once per
+clone:
+
+```bash
+git config core.hooksPath .githooks
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
+
 ## Status
 
 Pre-1.0. API may change before v1; both subpackages have shipping
@@ -192,4 +220,5 @@ upstream cuts releases.
   from MIT projects)
 - `gomlx`, `onnx-gomlx`, `go-huggingface` — Apache 2.0
 
-No GPL or AGPL anywhere in the tree.
+No GPL or AGPL anywhere in the tree. CI enforces this via
+`make license-audit` (see Development).
