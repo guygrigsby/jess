@@ -41,11 +41,11 @@ an earlier inclination to wrap agentcore's `subagent.Tool` (see Decision 5).
 
 jess defines its own domain types (`Agent`, `Session`, `Run`, `Message`,
 `Event`, `Tool`) and translates to and from agentcore at a single boundary.
-agentcore is importable only inside `internal/agentcore/`. No agentcore type
+agentcore is importable only inside `internal/acl/`. No agentcore type
 appears in any jess public API.
 
 This is enforced mechanically: a test asserts that `voocel/agentcore` is
-imported only by files under `internal/agentcore/`. That grep is the
+imported only by files under `internal/acl/`. That grep is the
 machine-checkable definition of "fully encapsulated"; if it fails, the ACL has
 leaked.
 
@@ -56,11 +56,11 @@ leaked.
 | Session (root `jess`) | Drive a conversation run; the host's facade | `Agent` (root), `Session`, `Run` |
 | Conversation (`jess/message`) | The messages the domain speaks in | `Message`, `ContentBlock`, `Role` |
 | Events (`jess/event`) | The observable stream wrapping a run | `Event`, `EventKind`, `Stream` |
-| Tools (`jess/tool`) | The capability the model invokes | `Tool`, `ToolResult` |
+| Tools (`jess/tool`) | The capability the model invokes | `Tool` |
 | Memory (`jess/memory`) | Durable recall (existing) | `Store`, `Recaller`, `Entry`, `Kind` |
 | Skills (`jess/skill`) | Capability bundles (existing) | `Skill`, `Set` |
 | Orchestration (`jess/subagent`) | Bounded subagent scheduling | `Spec`, `Pool`, `Task` |
-| ACL (`internal/agentcore`) | The only importer of agentcore | runtime, translate, pool runner |
+| ACL (`internal/acl`) | The only importer of agentcore | runtime, translate, pool runner |
 
 ```
 jess/
@@ -70,17 +70,26 @@ jess/
 ├── options.go          # functional options (model, memory, skills, subagents, pool limits)
 ├── message/            # Message, ContentBlock, Role
 ├── event/              # Event, EventKind, Stream
-├── tool/               # Tool interface, ToolResult
+├── tool/               # Tool interface
 ├── memory/             # existing; agentcore adapter removed
 ├── skill/              # renamed from skills/; agentcore.go removed
 ├── subagent/           # Spec, Pool, Task (orchestration)
 └── internal/
-    └── agentcore/      # ACL: sole import of voocel/agentcore
+    └── acl/            # anti-corruption layer: sole import of voocel/agentcore
         ├── runtime.go       # constructs & drives agentcore.Agent (top-level Session)
         ├── looprunner.go    # runs agentcore.AgentLoop per subagent Task
         ├── translate.go     # Event/Message/Tool/SystemBlock translation (pure fns)
         └── subagenttool.go  # LLM-facing subagent tool, backed by the Pool
 ```
+
+Note on tool results: there is no separate `ToolResult` domain type. A tool
+result is a `message.ContentBlock{Kind: BlockToolResult}` (carrying `ToolID`,
+`Result`, `IsError`). The ACL maps that to and from agentcore's `ToolResult`
+(and its `RoleTool` message encoding), which is the only place the two shapes
+meet. (agentcore represents a tool call as a `ContentBlock` but a tool result
+as a whole `RoleTool` message, so the ACL translation is real field mapping,
+not a pass-through wrap. The wrap-without-copying property holds only for the
+`Tool` interface itself.)
 
 ### 3. Aggregates and ubiquitous language
 
@@ -194,7 +203,7 @@ do not drive a single Session from two goroutines at once.
   `New`/`NewSession`, never via the Stream.
 - **Run-time errors** flow as `event.Event{Kind: error}` and end the run.
 - **Memory errors** stay invisible by design: the memory context manager
-  adapter (moved into `internal/agentcore/`) keeps swallowing Store/Recaller
+  adapter (moved into `internal/acl/`) keeps swallowing Store/Recaller
   errors and degrades to no-memory, never no-agent.
 - **Subagent failures** are isolated: a dying child produces a `tool_end` event
   with `IsError` plus an `error`-kind event tagged with its `AgentPath`; the
@@ -204,11 +213,11 @@ do not drive a single Session from two goroutines at once.
 
 - `skills/` -> `skill/`; `skills/agentcore.go` deleted from the public package
   (logic moves to the ACL).
-- `memory/`: `context_manager.go` moves to `internal/agentcore/`;
+- `memory/`: `context_manager.go` moves to `internal/acl/`;
   `Store`/`Recaller`/`Entry`/`Kind` and the tools stay, with tools implementing
   `jess/tool.Tool` (structurally unchanged).
 - New packages: `jess` root, `jess/message`, `jess/event`, `jess/tool`,
-  `jess/subagent`, `internal/agentcore`.
+  `jess/subagent`, `internal/acl`.
 - `examples/quickstart` rewritten to the facade.
 - `README.md` rewritten: it currently describes jess as a "library of parts"
   (the host wires the `agentcore.Agent`); the cutover replaces that with the
@@ -257,7 +266,7 @@ Negative / costs:
 Risks:
 
 - agentcore `AgentLoop`/`Event` semantics could change upstream; mitigated by
-  concentrating all coupling in `internal/agentcore/` and the table-driven
+  concentrating all coupling in `internal/acl/` and the table-driven
   translation tests.
 - "Thousands of subagents" still implies thousands of LLM calls over time;
   `MaxConcurrent` plus provider rate limits, not the Pool alone, govern real
@@ -268,7 +277,7 @@ Risks:
 - ACL translation: exhaustive table-driven tests over every `EventKind` and
   `ContentBlock` variant, including error cases (pure functions, cheap to total).
 - Boundary test: assert `voocel/agentcore` is imported only under
-  `internal/agentcore/`.
+  `internal/acl/`.
 - Session/runtime: a scripted fake `agentcore.ChatModel` drives a real loop
   through the ACL; assert the jess `Event` sequence and `Run.Summary`.
 - Subagent Pool: assert bounded concurrency (never exceeds `MaxConcurrent`),
