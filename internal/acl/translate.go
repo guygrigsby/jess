@@ -38,3 +38,40 @@ func roleFromAC(r ac.Role) message.Role {
 		return message.Role(r)
 	}
 }
+
+// messagesToAC converts jess messages to agentcore messages. A RoleTool
+// message expands to one agentcore message per tool-result block (agentcore
+// models each tool result as a standalone RoleTool message via ToolResultMsg).
+// All other roles map to a single message with translated content blocks.
+func messagesToAC(msgs []message.Message) []ac.Message {
+	out := make([]ac.Message, 0, len(msgs))
+	for _, m := range msgs {
+		if m.Role == message.RoleTool {
+			for _, b := range m.Content {
+				if b.Kind != message.BlockToolResult {
+					continue
+				}
+				out = append(out, ac.ToolResultMsg(b.ToolID, b.Result, b.IsError))
+			}
+			continue
+		}
+		blocks := make([]ac.ContentBlock, 0, len(m.Content))
+		for _, b := range m.Content {
+			blocks = append(blocks, blockToAC(b))
+		}
+		out = append(out, ac.Message{Role: roleToAC(m.Role), Content: blocks})
+	}
+	return out
+}
+
+// blockToAC translates a single non-tool-result content block.
+func blockToAC(b message.ContentBlock) ac.ContentBlock {
+	switch b.Kind {
+	case message.BlockThinking:
+		return ac.ThinkingBlock(b.Text)
+	case message.BlockToolCall:
+		return ac.ToolCallBlock(ac.ToolCall{ID: b.ToolID, Name: b.ToolName, Args: b.Args})
+	default: // BlockText (and any unknown kind) render as text
+		return ac.TextBlock(b.Text)
+	}
+}
