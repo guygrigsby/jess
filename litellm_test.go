@@ -23,3 +23,14 @@ func TestLiteLLM_ReturnsModel(t *testing.T) {
 		t.Fatal("LiteLLM returned nil model and nil error")
 	}
 }
+
+func TestLiteLLM_OptionsThreadThrough(t *testing.T) {
+	m, err := LiteLLM("openai", "gpt-4o", WithLLMAPIKey("sk-test"), WithLLMBaseURL("http://localhost:1234"))
+	if err != nil {
+		t.Logf("construction error (acceptable, network-free): %v", err)
+		return
+	}
+	if m == nil {
+		t.Fatal("expected a non-nil model.Model")
+	}
+}

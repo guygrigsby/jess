@@ -125,10 +125,23 @@ func usageFromAC(u *ac.Usage) model.Usage {
 	return model.Usage{Input: u.Input, Output: u.Output, TotalTokens: u.TotalTokens}
 }
 
-// NewLiteLLMModel builds a litellm-backed cloud model and returns it as a
-// model.Model (a native passthrough). provider/modelID are litellm identifiers
-// (e.g. "openai","gpt-4o"); options configure the underlying adapter.
-func NewLiteLLMModel(provider, modelID string, opts ...llm.ModelOption) (model.Model, error) {
+// LiteLLMConfig configures a litellm-backed model. Plain fields (no agentcore
+// types) so the root jess package can build it without importing the harness.
+type LiteLLMConfig struct {
+	APIKey  string
+	BaseURL string
+}
+
+// NewLiteLLMModel builds a litellm-backed cloud model from provider/modelID and
+// an optional config, returning it as a model.Model (native passthrough).
+func NewLiteLLMModel(provider, modelID string, cfg LiteLLMConfig) (model.Model, error) {
+	var opts []llm.ModelOption
+	if cfg.APIKey != "" {
+		opts = append(opts, llm.WithAPIKey(cfg.APIKey))
+	}
+	if cfg.BaseURL != "" {
+		opts = append(opts, llm.WithBaseURL(cfg.BaseURL))
+	}
 	cm, err := llm.NewModel(provider, modelID, opts...)
 	if err != nil {
 		return nil, err
