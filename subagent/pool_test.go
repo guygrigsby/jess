@@ -186,3 +186,37 @@ func TestPool_ConcurrentSubmitAndCloseNoPanic(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 }
+
+func TestPool_SubmitToForwardsToSink(t *testing.T) {
+	p := New(WithMaxConcurrent(2))
+	p.Register(echo("a", "ra"))
+	sink := event.NewStream(64)
+
+	task, err := p.SubmitTo(context.Background(), sink, "a", "go")
+	if err != nil {
+		t.Fatalf("SubmitTo: %v", err)
+	}
+
+	done := make(chan struct{})
+	var sawTagged bool
+	go func() {
+		for ev := range sink.Events() {
+			if len(ev.AgentPath) > 0 {
+				sawTagged = true
+			}
+		}
+		close(done)
+	}()
+	p.Close()
+	if _, err := task.Wait(); err != nil {
+		t.Fatalf("task: %v", err)
+	}
+	sink.Close() // caller owns the sink; close it to end the consumer
+	<-done
+	if !sawTagged {
+		t.Error("expected tagged events on the provided sink")
+	}
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+}

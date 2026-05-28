@@ -57,6 +57,7 @@ type job struct {
 	spec  Spec
 	input string
 	path  []string
+	sink  *event.Stream // nil => the pool's merged stream
 	task  *Task
 }
 
@@ -120,10 +121,22 @@ func (p *Pool) Register(s Spec) {
 	p.specs[s.Name] = s
 }
 
-// Submit queues a run of the named subagent with the given input. It blocks if
-// the queue is full and returns when a slot is available or ctx is cancelled.
-// parentPath is the caller's AgentPath (nil at top level).
+// Submit queues a run whose events go to the pool's merged stream (Events()).
+// It blocks if the queue is full and returns when a slot is available or ctx
+// is cancelled. parentPath is the caller's AgentPath (nil at top level).
 func (p *Pool) Submit(ctx context.Context, name, input string, parentPath ...string) (*Task, error) {
+	return p.submit(ctx, nil, name, input, parentPath...)
+}
+
+// SubmitTo queues a run whose events are forwarded to sink (AgentPath-tagged)
+// instead of the pool's merged stream. Used to bubble a subagent's events into
+// a parent run's stream. The sink is caller-owned; the pool never closes it.
+func (p *Pool) SubmitTo(ctx context.Context, sink *event.Stream, name, input string, parentPath ...string) (*Task, error) {
+	return p.submit(ctx, sink, name, input, parentPath...)
+}
+
+// submit is the shared implementation for Submit and SubmitTo.
+func (p *Pool) submit(ctx context.Context, sink *event.Stream, name, input string, parentPath ...string) (*Task, error) {
 	p.mu.RLock()
 	spec, ok := p.specs[name]
 	p.mu.RUnlock()
@@ -136,7 +149,7 @@ func (p *Pool) Submit(ctx context.Context, name, input string, parentPath ...str
 	id := p.instance.Add(1)
 	path := append(append([]string(nil), parentPath...), fmt.Sprintf("%s/%04d", name, id))
 	task := &Task{agentPath: path, done: make(chan struct{})}
-	j := &job{spec: spec, input: input, path: path, task: task}
+	j := &job{spec: spec, input: input, path: path, sink: sink, task: task}
 
 	// Hold sendMu for reading across the send so Close cannot close tasks
 	// mid-send. The closed check (under the same lock) rejects submits after
@@ -170,11 +183,16 @@ func (p *Pool) runJob(j *job) {
 		j.task.err = err
 		return
 	}
-	// Forward this run's events onto the merged stream, tagged with the job's
-	// path (prepended so any nested path is preserved).
+	// Forward this run's events onto the destination stream, tagged with the
+	// job's path (prepended so any nested path is preserved). Jobs submitted
+	// via SubmitTo use a caller-provided sink; others use the merged pool stream.
+	dst := p.stream
+	if j.sink != nil {
+		dst = j.sink
+	}
 	for ev := range run.Events() {
 		ev.AgentPath = prependPath(j.path, ev.AgentPath)
-		p.stream.Send(ev)
+		dst.Send(ev)
 	}
 	res, werr := run.Wait() // events already drained above; returns the captured result
 	j.task.res = Result{AgentPath: j.path, Messages: res.Messages, Summary: res.Summary}
