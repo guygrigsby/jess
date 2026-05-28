@@ -29,10 +29,19 @@ const (
 )
 
 // Pool runs subagent tasks with bounded concurrency and merges their events.
+//
+// Callers must call Close (graceful) or Cancel (abort) when done with the Pool;
+// otherwise its worker goroutines run forever waiting for tasks.
 type Pool struct {
 	mu       sync.RWMutex
 	specs    map[string]Spec
 	maxDepth int
+
+	// sendMu guards sends to / closing of tasks. Submit holds it for reading
+	// across its channel send; Close holds it for writing while it closes the
+	// channel, so a send can never race the close (no send-on-closed panic).
+	sendMu sync.RWMutex
+	closed bool
 
 	tasks  chan *job
 	stream *event.Stream
@@ -129,6 +138,14 @@ func (p *Pool) Submit(ctx context.Context, name, input string, parentPath ...str
 	task := &Task{agentPath: path, done: make(chan struct{})}
 	j := &job{spec: spec, input: input, path: path, task: task}
 
+	// Hold sendMu for reading across the send so Close cannot close tasks
+	// mid-send. The closed check (under the same lock) rejects submits after
+	// Close without racing the channel close.
+	p.sendMu.RLock()
+	defer p.sendMu.RUnlock()
+	if p.closed {
+		return nil, ErrPoolClosed
+	}
 	select {
 	case <-p.ctx.Done():
 		return nil, ErrPoolClosed
@@ -176,9 +193,16 @@ func prependPath(base, existing []string) []string {
 }
 
 // Close stops accepting new tasks. In-flight and queued tasks still run; the
-// merged event stream closes once they finish. Idempotent.
+// merged event stream closes once they finish. Idempotent. Safe to call
+// concurrently with Submit (a racing Submit returns ErrPoolClosed rather than
+// panicking).
 func (p *Pool) Close() {
-	p.closeOnce.Do(func() { close(p.tasks) })
+	p.closeOnce.Do(func() {
+		p.sendMu.Lock()
+		p.closed = true
+		close(p.tasks)
+		p.sendMu.Unlock()
+	})
 }
 
 // Cancel aborts all in-flight and queued tasks by cancelling the pool context,

@@ -3,6 +3,7 @@ package subagent
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -161,5 +162,27 @@ func TestPool_CancelAbortsInFlight(t *testing.T) {
 	_ = p.Wait()
 	if _, err := task.Wait(); err == nil {
 		t.Log("task completed despite cancel (acceptable if it finished first)")
+	}
+}
+
+// Concurrent Submit and Close must not panic (send on closed channel) — the
+// airtight guarantee for the pool's lifecycle.
+func TestPool_ConcurrentSubmitAndCloseNoPanic(t *testing.T) {
+	p := New(WithMaxConcurrent(4), WithMaxQueued(50))
+	p.Register(echo("a", "r"))
+
+	var wg sync.WaitGroup
+	for i := 0; i < 60; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, _ = p.Submit(context.Background(), "a", "x") // may succeed or get ErrPoolClosed
+		}()
+	}
+	go p.Close() // race Close against the submits
+	wg.Wait()
+	p.Close() // idempotent
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
 	}
 }
