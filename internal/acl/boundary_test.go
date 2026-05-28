@@ -18,7 +18,6 @@ import (
 // TODO(ADR-0001 Phase 4): delete these entries; the only allowed importer is
 // internal/acl.
 var preMigrationAgentcoreImporters = []string{
-	"doc.go",
 	"memory/",
 	"skills/",
 	"examples/",

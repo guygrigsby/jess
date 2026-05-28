@@ -176,9 +176,10 @@ func EventFromAC(e ac.Event) (event.Event, bool) {
 	}
 }
 
-// deltaKindFromAC maps agentcore's message-delta classification to jess's. The
-// string values coincide ("", "thinking", "toolcall"), but the mapping is
-// explicit so a divergence is a test failure rather than a silent mismatch.
+// deltaKindFromAC maps agentcore's message-delta classification to jess's.
+// Thinking and tool-call deltas map explicitly; everything else (plain text
+// today, plus any delta kind agentcore adds later) maps to DeltaText, so a new
+// upstream kind degrades to text rather than breaking translation.
 func deltaKindFromAC(d ac.DeltaKind) event.DeltaKind {
 	switch d {
 	case ac.DeltaThinking:
