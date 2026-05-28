@@ -52,8 +52,12 @@ type Task struct {
 	err       error
 }
 
-// AgentPath returns the task's path segment(s) (e.g. {"research/0001"}).
-func (t *Task) AgentPath() []string { return t.agentPath }
+// AgentPath returns a copy of the task's path segment(s) (e.g.
+// {"research/0001"}). The copy keeps the task's internal path immutable from
+// callers, who could otherwise corrupt the path observed on events/results.
+func (t *Task) AgentPath() []string {
+	return append([]string(nil), t.agentPath...)
+}
 
 // Wait blocks until the task finishes and returns its result and error.
 func (t *Task) Wait() (Result, error) {

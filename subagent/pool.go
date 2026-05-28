@@ -40,8 +40,12 @@ type Pool struct {
 	// sendMu guards sends to / closing of tasks. Submit holds it for reading
 	// across its channel send; Close holds it for writing while it closes the
 	// channel, so a send can never race the close (no send-on-closed panic).
-	sendMu sync.RWMutex
-	closed bool
+	// closing is closed by Close BEFORE it takes sendMu, so a Submit blocked on
+	// a full queue unblocks immediately rather than holding the read lock and
+	// stalling Close.
+	sendMu  sync.RWMutex
+	closed  bool
+	closing chan struct{}
 
 	tasks  chan *job
 	stream *event.Stream
@@ -93,6 +97,7 @@ func New(opts ...Option) *Pool {
 	p := &Pool{
 		specs:    make(map[string]Spec),
 		maxDepth: cfg.maxDepth,
+		closing:  make(chan struct{}),
 		tasks:    make(chan *job, cfg.maxQueued),
 		stream:   event.NewStream(mergedStreamBuffer),
 		g:        g,
@@ -165,6 +170,10 @@ func (p *Pool) submit(ctx context.Context, sink *event.Stream, name, input strin
 		return nil, ErrPoolClosed
 	}
 	select {
+	case <-p.closing:
+		// Close was called; unblock rather than hold the read lock (and stall
+		// Close) waiting for queue space.
+		return nil, ErrPoolClosed
 	case <-p.ctx.Done():
 		return nil, ErrPoolClosed
 	case <-ctx.Done():
@@ -205,10 +214,9 @@ func (p *Pool) runJob(j *job) {
 }
 
 // prependPath returns base followed by existing (for nested subagent paths).
+// It always allocates a fresh slice so each tagged event owns its AgentPath —
+// a consumer mutating one event's path can't corrupt the task's other events.
 func prependPath(base, existing []string) []string {
-	if len(existing) == 0 {
-		return base
-	}
 	out := make([]string, 0, len(base)+len(existing))
 	out = append(out, base...)
 	out = append(out, existing...)
@@ -221,6 +229,10 @@ func prependPath(base, existing []string) []string {
 // panicking).
 func (p *Pool) Close() {
 	p.closeOnce.Do(func() {
+		// Signal closure first (no lock) so any Submit blocked on a full queue
+		// unblocks and releases its read lock; only then take the write lock to
+		// close the channel safely (no send can be in flight).
+		close(p.closing)
 		p.sendMu.Lock()
 		p.closed = true
 		close(p.tasks)

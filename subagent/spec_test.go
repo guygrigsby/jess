@@ -14,3 +14,12 @@ func TestSpec_Config(t *testing.T) {
 		t.Fatalf("config = %+v", cfg)
 	}
 }
+
+func TestTask_AgentPathReturnsCopy(t *testing.T) {
+	tk := &Task{agentPath: []string{"research/0001"}}
+	got := tk.AgentPath()
+	got[0] = "mutated"
+	if tk.AgentPath()[0] != "research/0001" {
+		t.Fatal("AgentPath must return a copy; caller mutation leaked into the task")
+	}
+}

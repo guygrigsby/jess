@@ -220,3 +220,32 @@ func TestPool_SubmitToForwardsToSink(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 }
+
+// Close must not hang behind a Submit blocked on a full queue.
+func TestPool_CloseUnblocksBlockedSubmit(t *testing.T) {
+	release := make(chan struct{})
+	block := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return &model.Response{Message: message.Message{Role: message.RoleAssistant}, StopReason: "stop"}, nil
+	})
+	p := New(WithMaxConcurrent(1), WithMaxQueued(1))
+	p.Register(Spec{Name: "b", Model: block})
+	_, _ = p.Submit(context.Background(), "b", "1") // occupies the worker
+	_, _ = p.Submit(context.Background(), "b", "2") // fills the queue
+
+	go func() { _, _ = p.Submit(context.Background(), "b", "3") }() // blocks on full queue, no cancel
+	time.Sleep(50 * time.Millisecond)
+
+	closed := make(chan struct{})
+	go func() { p.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung behind a blocked Submit")
+	}
+	close(release)
+	_ = p.Wait()
+}
