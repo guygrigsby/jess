@@ -139,8 +139,8 @@ func (p *Pool) Submit(ctx context.Context, name, input string, parentPath ...str
 	}
 }
 
-// runJob executes one job on a fresh runtime and captures its result. (Event
-// merge onto the pool stream is added in the next task.)
+// runJob executes one job on a fresh runtime, forwards its events onto the
+// merged pool stream tagged with the job's AgentPath, and captures its result.
 func (p *Pool) runJob(j *job) {
 	defer close(j.task.done)
 	rt, err := acl.NewRuntime(j.spec.config())
@@ -153,9 +153,26 @@ func (p *Pool) runJob(j *job) {
 		j.task.err = err
 		return
 	}
-	res, werr := run.Wait()
+	// Forward this run's events onto the merged stream, tagged with the job's
+	// path (prepended so any nested path is preserved).
+	for ev := range run.Events() {
+		ev.AgentPath = prependPath(j.path, ev.AgentPath)
+		p.stream.Send(ev)
+	}
+	res, werr := run.Wait() // events already drained above; returns the captured result
 	j.task.res = Result{AgentPath: j.path, Messages: res.Messages, Summary: res.Summary}
 	j.task.err = werr
+}
+
+// prependPath returns base followed by existing (for nested subagent paths).
+func prependPath(base, existing []string) []string {
+	if len(existing) == 0 {
+		return base
+	}
+	out := make([]string, 0, len(base)+len(existing))
+	out = append(out, base...)
+	out = append(out, existing...)
+	return out
 }
 
 // Close stops accepting new tasks. In-flight and queued tasks still run; the

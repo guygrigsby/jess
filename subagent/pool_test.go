@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/guygrigsby/jess/event"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/model"
 )
@@ -73,5 +74,29 @@ func TestPool_RespectsMaxConcurrent(t *testing.T) {
 	}
 	if maxSeen.Load() > limit {
 		t.Fatalf("max concurrent = %d, want <= %d", maxSeen.Load(), limit)
+	}
+}
+
+func TestPool_MergesTaggedEvents(t *testing.T) {
+	p := New(WithMaxConcurrent(2))
+	p.Register(echo("a", "ra"))
+
+	task, _ := p.Submit(context.Background(), "a", "go")
+	p.Close()
+
+	var sawRunEndForTask bool
+	for ev := range p.Events() {
+		if len(ev.AgentPath) == 0 {
+			t.Errorf("event missing AgentPath: %+v", ev)
+		}
+		if ev.Kind == event.KindRunEnd && ev.AgentPath[len(ev.AgentPath)-1] == task.AgentPath()[len(task.AgentPath())-1] {
+			sawRunEndForTask = true
+		}
+	}
+	if !sawRunEndForTask {
+		t.Error("did not see a tagged run_end for the task")
+	}
+	if err := p.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
 	}
 }
