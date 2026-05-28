@@ -2,6 +2,7 @@ package acl
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	ac "github.com/voocel/agentcore"
@@ -53,5 +54,51 @@ func TestMessagesFromACAgent(t *testing.T) {
 	got := messagesFromACAgent(in)
 	if len(got) != 1 || got[0].Text() != "hi" {
 		t.Fatalf("got %+v", got)
+	}
+}
+
+func TestRuntime_PromptStreamsAndCompletes(t *testing.T) {
+	rt, _ := NewRuntime(Config{Model: echoOnce("hello")})
+	run, err := rt.Prompt(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	var kinds []event.EventKind
+	for ev := range run.Events() {
+		kinds = append(kinds, ev.Kind)
+	}
+	if len(kinds) < 2 || kinds[0] != event.KindRunStart || kinds[len(kinds)-1] != event.KindRunEnd {
+		t.Fatalf("event kinds = %v", kinds)
+	}
+	res, err := run.Wait()
+	if err != nil {
+		t.Fatalf("Wait: %v", err)
+	}
+	if res.Summary == nil {
+		t.Fatal("expected a run summary")
+	}
+}
+
+func TestRuntime_SecondPromptWhileRunningErrors(t *testing.T) {
+	release := make(chan struct{})
+	blocking := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+		return &model.Response{Message: message.Message{Role: message.RoleAssistant}, StopReason: "stop"}, nil
+	})
+	rt, _ := NewRuntime(Config{Model: blocking})
+	run, err := rt.Prompt(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("first Prompt: %v", err)
+	}
+	if _, err := rt.Prompt(context.Background(), "again"); !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("second Prompt err = %v, want ErrRunInProgress", err)
+	}
+	close(release)
+	if _, err := run.Wait(); err != nil {
+		t.Fatalf("Wait: %v", err)
 	}
 }

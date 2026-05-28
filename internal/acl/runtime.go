@@ -1,6 +1,7 @@
 package acl
 
 import (
+	"context"
 	"errors"
 	"sync"
 
@@ -74,8 +75,8 @@ func newACAgent(cfg Config) (*ac.Agent, error) {
 // later steps.
 type Runtime struct {
 	agent   *ac.Agent
-	mu      sync.Mutex //nolint:unused // used in later Prompt/Continue steps
-	running bool       //nolint:unused // used in later Prompt/Continue steps
+	mu      sync.Mutex
+	running bool
 }
 
 // NewRuntime builds a Runtime from cfg.
@@ -122,14 +123,71 @@ func (r *Run) Wait() (Result, error) {
 }
 
 // captureEnd records the final messages/summary/error from an EventAgentEnd.
-//
-//nolint:unused // called in the Prompt/Continue step
 func (r *Run) captureEnd(ev ac.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.messages = messagesFromACAgent(ev.NewMessages)
 	r.summary = summaryFromAC(ev.Summary)
 	r.err = ev.Err
+}
+
+// Prompt starts a new run with the given input. Returns ErrRunInProgress if a
+// run is already active.
+func (rt *Runtime) Prompt(ctx context.Context, input string) (*Run, error) {
+	return rt.start(ctx, func() error { return rt.agent.Prompt(input) })
+}
+
+// Continue resumes the conversation without new input.
+func (rt *Runtime) Continue(ctx context.Context) (*Run, error) {
+	return rt.start(ctx, func() error { return rt.agent.Continue() })
+}
+
+func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error) {
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.running {
+		return nil, ErrRunInProgress
+	}
+	run := newRun()
+
+	var unsub func()
+	unsub = rt.agent.Subscribe(func(ev ac.Event) {
+		if ev.Type == ac.EventAgentEnd {
+			run.captureEnd(ev)
+		}
+		if jev, ok := EventFromAC(ev); ok {
+			run.stream.Send(jev)
+		}
+		if ev.Type == ac.EventAgentEnd {
+			run.stream.Close()
+			unsub()
+			rt.mu.Lock()
+			rt.running = false
+			rt.mu.Unlock()
+			close(run.done)
+		}
+	})
+
+	if err := startFn(); err != nil {
+		unsub()
+		run.stream.Close()
+		close(run.done)
+		if errors.Is(err, ac.ErrAlreadyRunning) {
+			return nil, ErrRunInProgress
+		}
+		return nil, err
+	}
+	rt.running = true
+
+	// Bridge jess's ctx to agentcore's abort: cancelling ctx aborts the run.
+	go func() {
+		select {
+		case <-ctx.Done():
+			rt.agent.Abort()
+		case <-run.done:
+		}
+	}()
+	return run, nil
 }
 
 // messagesFromACAgent converts agentcore AgentMessages to jess messages,
