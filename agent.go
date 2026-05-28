@@ -1,7 +1,9 @@
 package jess
 
 import (
+	"context"
 	"errors"
+	"sync"
 
 	"github.com/guygrigsby/jess/internal/acl"
 )
@@ -12,6 +14,9 @@ import (
 // and persists across conversations; message history belongs to each Session.
 type Agent struct {
 	cfg acl.Config
+
+	mu      sync.Mutex
+	defSess *Session
 }
 
 // New builds an Agent from options. WithModel is required.
@@ -33,4 +38,35 @@ func New(opts ...Option) (*Agent, error) {
 		AgentID:      o.agentID,
 		MaxTurns:     o.maxTurns,
 	}}, nil
+}
+
+func (a *Agent) defaultSession() (*Session, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.defSess == nil {
+		s, err := a.newSession()
+		if err != nil {
+			return nil, err
+		}
+		a.defSess = s
+	}
+	return a.defSess, nil
+}
+
+// Prompt starts a run on the Agent's default Session.
+func (a *Agent) Prompt(ctx context.Context, input string) (*Run, error) {
+	s, err := a.defaultSession()
+	if err != nil {
+		return nil, err
+	}
+	return s.Prompt(ctx, input)
+}
+
+// Continue resumes the Agent's default Session.
+func (a *Agent) Continue(ctx context.Context) (*Run, error) {
+	s, err := a.defaultSession()
+	if err != nil {
+		return nil, err
+	}
+	return s.Continue(ctx)
 }
