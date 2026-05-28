@@ -116,20 +116,42 @@ func (r *Run) Events() <-chan event.Event { return r.stream.Events() }
 
 // Wait blocks until the run finishes and returns its final messages, summary,
 // and any run error.
+//
+// Wait drains any events the caller has not consumed, so it is safe to call
+// without ranging Events() — a long run that fills the event buffer will not
+// deadlock. To observe events, range Events() to completion (it closes when the
+// run ends) and then call Wait; do not range Events() concurrently from another
+// goroutine while calling Wait (Events is single-consumer).
 func (r *Run) Wait() (Result, error) {
+	for range r.stream.Events() {
+	}
 	<-r.done
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return Result{Messages: r.messages, Summary: r.summary}, r.err
 }
 
-// captureEnd records the final messages/summary/error from an EventAgentEnd.
+// captureEnd records the final messages/summary from an EventAgentEnd. It only
+// sets err if none was captured earlier (an EventError that preceded the end
+// carries the real failure; do not clobber it with a nil end-event error).
 func (r *Run) captureEnd(ev ac.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.messages = messagesFromACAgent(ev.NewMessages)
 	r.summary = summaryFromAC(ev.Summary)
-	r.err = ev.Err
+	if r.err == nil {
+		r.err = ev.Err
+	}
+}
+
+// captureErr records the first run error (from an EventError) so Wait reflects
+// it even when the caller never inspects the event stream.
+func (r *Run) captureErr(err error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.err == nil {
+		r.err = err
+	}
 }
 
 // Prompt starts a new run with the given input. Returns ErrRunInProgress if a
@@ -153,7 +175,12 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 
 	var unsub func()
 	unsub = rt.agent.Subscribe(func(ev ac.Event) {
-		if ev.Type == ac.EventAgentEnd {
+		switch ev.Type {
+		case ac.EventError:
+			if ev.Err != nil {
+				run.captureErr(ev.Err)
+			}
+		case ac.EventAgentEnd:
 			run.captureEnd(ev)
 		}
 		if jev, ok := EventFromAC(ev); ok {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	ac "github.com/voocel/agentcore"
 
@@ -36,6 +37,9 @@ func TestRun_WaitReturnsResultAfterDone(t *testing.T) {
 	r := newRun()
 	r.messages = []message.Message{{Role: message.RoleAssistant}}
 	r.summary = &event.RunSummary{Turns: 1, EndReason: "stop"}
+	// Mirror the real run invariant: the stream is closed when done is. Wait
+	// drains the stream before returning, so an open stream would block it.
+	r.stream.Close()
 	close(r.done)
 
 	res, err := r.Wait()
@@ -126,4 +130,57 @@ func TestRuntime_SteerFollowUpDoNotPanic(t *testing.T) {
 	rt, _ := NewRuntime(Config{Model: echoOnce("x")})
 	rt.Steer(message.UserText("steer"))
 	rt.FollowUp(message.UserText("later"))
+}
+
+// chattyModel emits n text-delta chunks then a Done chunk, producing more
+// events than the stream buffer to exercise backpressure handling.
+type chattyModel struct{ n int }
+
+func (chattyModel) SupportsTools() bool { return false }
+func (m chattyModel) Stream(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk)
+	go func() {
+		defer close(ch)
+		for i := 0; i < m.n; i++ {
+			select {
+			case <-ctx.Done():
+				return
+			case ch <- model.Chunk{Delta: "x", DeltaKind: event.DeltaText}:
+			}
+		}
+		ch <- model.Chunk{Done: true, Message: message.Message{Role: message.RoleAssistant}, StopReason: "stop"}
+	}()
+	return ch, nil
+}
+
+// A Wait-only caller must not deadlock even when the run emits more events than
+// the stream buffer (Wait drains internally).
+func TestRun_WaitWithoutDrainingDoesNotHang(t *testing.T) {
+	rt, _ := NewRuntime(Config{Model: chattyModel{n: 300}}) // > streamBuffer (128)
+	run, err := rt.Prompt(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	done := make(chan struct{})
+	go func() { _, _ = run.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("Wait hung without draining Events (backpressure deadlock)")
+	}
+}
+
+// Wait must report a run error even when the caller never inspects Events.
+func TestRun_WaitCapturesError(t *testing.T) {
+	errModel := model.Once(false, func(context.Context, []message.Message, []model.ToolSpec) (*model.Response, error) {
+		return nil, errors.New("model boom")
+	})
+	rt, _ := NewRuntime(Config{Model: errModel})
+	run, err := rt.Prompt(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	if _, werr := run.Wait(); werr == nil {
+		t.Fatal("Wait should report the run error, got nil")
+	}
 }
