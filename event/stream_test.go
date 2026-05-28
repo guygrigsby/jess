@@ -3,6 +3,7 @@ package event
 import (
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestStream_SendReceiveClose(t *testing.T) {
@@ -61,5 +62,32 @@ func TestStream_ConcurrentProducers(t *testing.T) {
 
 	if got != producers*each {
 		t.Errorf("received %d events, want %d", got, producers*each)
+	}
+}
+
+// Close must unblock a Send that is blocked on a full buffer (no consumer),
+// rather than hang waiting for the write lock behind it.
+func TestStream_CloseUnblocksBlockedSend(t *testing.T) {
+	s := NewStream(1)
+	s.Send(Event{Kind: KindRunStart}) // fill the buffer (cap 1)
+
+	sent := make(chan struct{})
+	go func() {
+		s.Send(Event{Kind: KindMessageDelta}) // blocks: buffer full, no consumer
+		close(sent)
+	}()
+	time.Sleep(50 * time.Millisecond) // let the producer block on the send
+
+	closed := make(chan struct{})
+	go func() { s.Close(); close(closed) }()
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Close hung behind a blocked Send")
+	}
+	select {
+	case <-sent:
+	case <-time.After(5 * time.Second):
+		t.Fatal("blocked Send did not unblock after Close")
 	}
 }
