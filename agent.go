@@ -12,6 +12,8 @@ import (
 // (model, skills, tools, system prompt, and the AgentID that scopes memory).
 // Safe for concurrent use; can back many Sessions. Memory belongs to the Agent
 // and persists across conversations; message history belongs to each Session.
+//
+// Construct an Agent with New; the zero value is not usable.
 type Agent struct {
 	cfg acl.Config
 
