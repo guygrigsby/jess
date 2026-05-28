@@ -71,8 +71,9 @@ func newACAgent(cfg Config) (*ac.Agent, error) {
 	return ac.NewAgent(opts...), nil
 }
 
-// Runtime drives a single agentcore.Agent. Prompt/Continue/etc. are added in
-// later steps.
+// Runtime drives a single agentcore.Agent: it starts runs (Prompt/Continue),
+// streams their translated events through a Run, enforces one run at a time,
+// and delegates mid-run input (Steer/FollowUp) and interruption (Abort).
 type Runtime struct {
 	agent   *ac.Agent
 	mu      sync.Mutex
@@ -203,14 +204,22 @@ func messagesFromACAgent(msgs []ac.AgentMessage) []message.Message {
 }
 
 // Steer injects a message into the running loop at the next safe point (soft
-// preemption). agentcore queues it if no run is active.
+// preemption). agentcore queues it if no run is active. Intended for user or
+// assistant messages; a message that translates to multiple agentcore messages
+// (a tool-result message) is steered as each part, and one that translates to
+// none is a no-op (never panics).
 func (rt *Runtime) Steer(msg message.Message) {
-	rt.agent.Steer(messagesToAC([]message.Message{msg})[0])
+	for _, m := range messagesToAC([]message.Message{msg}) {
+		rt.agent.Steer(m)
+	}
 }
 
 // FollowUp queues a message to be processed after the current run finishes.
+// Same message-translation semantics as Steer.
 func (rt *Runtime) FollowUp(msg message.Message) {
-	rt.agent.FollowUp(messagesToAC([]message.Message{msg})[0])
+	for _, m := range messagesToAC([]message.Message{msg}) {
+		rt.agent.FollowUp(m)
+	}
 }
 
 // Abort hard-cancels the current run (context cancellation). Queued steer and
