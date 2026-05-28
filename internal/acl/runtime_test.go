@@ -102,3 +102,28 @@ func TestRuntime_SecondPromptWhileRunningErrors(t *testing.T) {
 		t.Fatalf("Wait: %v", err)
 	}
 }
+
+func TestRuntime_AbortStopsRun(t *testing.T) {
+	blocking := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+		<-ctx.Done() // never returns until aborted
+		return nil, ctx.Err()
+	})
+	rt, _ := NewRuntime(Config{Model: blocking})
+	run, err := rt.Prompt(context.Background(), "hi")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	rt.Abort()
+	for range run.Events() { // must close (run ends) without hanging
+	}
+	res, _ := run.Wait()
+	if res.Summary != nil {
+		t.Logf("end reason after abort: %q", res.Summary.EndReason) // accept aborted/error
+	}
+}
+
+func TestRuntime_SteerFollowUpDoNotPanic(t *testing.T) {
+	rt, _ := NewRuntime(Config{Model: echoOnce("x")})
+	rt.Steer(message.UserText("steer"))
+	rt.FollowUp(message.UserText("later"))
+}

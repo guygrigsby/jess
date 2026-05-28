@@ -201,3 +201,18 @@ func messagesFromACAgent(msgs []ac.AgentMessage) []message.Message {
 	}
 	return out
 }
+
+// Steer injects a message into the running loop at the next safe point (soft
+// preemption). agentcore queues it if no run is active.
+func (rt *Runtime) Steer(msg message.Message) {
+	rt.agent.Steer(messagesToAC([]message.Message{msg})[0])
+}
+
+// FollowUp queues a message to be processed after the current run finishes.
+func (rt *Runtime) FollowUp(msg message.Message) {
+	rt.agent.FollowUp(messagesToAC([]message.Message{msg})[0])
+}
+
+// Abort hard-cancels the current run (context cancellation). Queued steer and
+// follow-up messages are processed on continuation.
+func (rt *Runtime) Abort() { rt.agent.Abort() }
