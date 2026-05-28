@@ -9,6 +9,7 @@ require (
 	github.com/gomlx/onnx-gomlx v0.4.3-0.20260514042729-59102c5a88dd
 	github.com/philippgille/chromem-go v0.7.1-0.20260517180012-fbeda8ab2b7a
 	github.com/voocel/agentcore v1.6.9
+	golang.org/x/sync v0.20.0
 )
 
 require (
