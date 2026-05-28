@@ -131,6 +131,11 @@ func (p *Pool) Submit(ctx context.Context, name, input string, parentPath ...str
 // SubmitTo queues a run whose events are forwarded to sink (AgentPath-tagged)
 // instead of the pool's merged stream. Used to bubble a subagent's events into
 // a parent run's stream. The sink is caller-owned; the pool never closes it.
+//
+// The sink must be actively consumed (the parent run's Events()/Wait drains
+// it). If the sink's buffer fills with no reader, the forwarding worker blocks
+// on Send, which stalls the task until the sink drains — when used from a tool
+// inside a parent run, that means the parent run must be consuming its stream.
 func (p *Pool) SubmitTo(ctx context.Context, sink *event.Stream, name, input string, parentPath ...string) (*Task, error) {
 	return p.submit(ctx, sink, name, input, parentPath...)
 }

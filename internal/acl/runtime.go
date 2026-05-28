@@ -51,6 +51,10 @@ func newACAgent(cfg Config, inject func(context.Context) context.Context) (*ac.A
 	var sysBlocks []ac.SystemBlock
 	if cfg.Skills != nil {
 		sysBlocks = cfg.Skills.SystemBlocks()
+		// NOTE: skill-contributed tools are appended as-is and do NOT get the
+		// run-stream injected into their context (only cfg.Tools do). A skill
+		// that ships a stream-aware tool (e.g. a subagent tool) would not see
+		// the parent stream. Revisit when skills move into the ACL (Phase 4).
 		tools = append(tools, cfg.Skills.Tools()...)
 	}
 	if cfg.SystemPrompt != "" {
