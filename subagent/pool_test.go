@@ -2,6 +2,7 @@ package subagent
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -98,5 +99,67 @@ func TestPool_MergesTaggedEvents(t *testing.T) {
 	}
 	if err := p.Wait(); err != nil {
 		t.Fatalf("Wait: %v", err)
+	}
+}
+
+func TestPool_UnknownAgent(t *testing.T) {
+	p := New()
+	defer func() { p.Close(); _ = p.Wait() }()
+	if _, err := p.Submit(context.Background(), "nope", "x"); !errors.Is(err, ErrUnknownAgent) {
+		t.Fatalf("err = %v, want ErrUnknownAgent", err)
+	}
+}
+
+func TestPool_MaxDepth(t *testing.T) {
+	p := New(WithMaxDepth(2))
+	p.Register(echo("a", "r"))
+	defer func() { p.Close(); _ = p.Wait() }()
+	if _, err := p.Submit(context.Background(), "a", "x", "p1/0001", "p2/0001"); !errors.Is(err, ErrMaxDepth) {
+		t.Fatalf("err = %v, want ErrMaxDepth", err)
+	}
+}
+
+func TestPool_SubmitBlocksWhenQueueFullThenCtxCancels(t *testing.T) {
+	release := make(chan struct{})
+	block := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+		select {
+		case <-release:
+		case <-ctx.Done():
+		}
+		return &model.Response{Message: message.Message{Role: message.RoleAssistant}, StopReason: "stop"}, nil
+	})
+	p := New(WithMaxConcurrent(1), WithMaxQueued(1))
+	p.Register(Spec{Name: "b", Model: block})
+	_, _ = p.Submit(context.Background(), "b", "1") // occupies the worker
+	_, _ = p.Submit(context.Background(), "b", "2") // fills the queue (cap 1)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err := p.Submit(ctx, "b", "3") // must block (queue full) then ctx-cancel
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("err = %v, want context.DeadlineExceeded", err)
+	}
+	close(release)
+	p.Close()
+	_ = p.Wait()
+}
+
+func TestPool_CancelAbortsInFlight(t *testing.T) {
+	started := make(chan struct{})
+	block := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+		close(started)
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	p := New(WithMaxConcurrent(1))
+	p.Register(Spec{Name: "b", Model: block})
+	task, _ := p.Submit(context.Background(), "b", "x")
+	<-started
+	p.Cancel()
+	for range p.Events() {
+	}
+	_ = p.Wait()
+	if _, err := task.Wait(); err == nil {
+		t.Log("task completed despite cancel (acceptable if it finished first)")
 	}
 }

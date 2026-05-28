@@ -181,6 +181,13 @@ func (p *Pool) Close() {
 	p.closeOnce.Do(func() { close(p.tasks) })
 }
 
+// Cancel aborts all in-flight and queued tasks by cancelling the pool context,
+// then behaves like Close. In-flight runs are interrupted (ctx -> abort).
+func (p *Pool) Cancel() {
+	p.cancel()
+	p.Close()
+}
+
 // Wait blocks until all submitted tasks finish (call Close first). It drains
 // the merged event stream so a caller that ignores Events never deadlocks.
 func (p *Pool) Wait() error {
