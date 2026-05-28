@@ -83,3 +83,12 @@ func TestOnce_NilResponseBecomesErrChunk(t *testing.T) {
 		t.Fatalf("nil response must yield an error chunk, got %+v", c)
 	}
 }
+
+func TestOnce_NilFuncBecomesErrChunk(t *testing.T) {
+	m := Once(false, nil) // misuse: nil GenerateFunc
+	ch, _ := m.Stream(context.Background(), nil, nil)
+	c := <-ch
+	if c.Err == nil || c.Done {
+		t.Fatalf("nil GenerateFunc must yield an error chunk, not panic; got %+v", c)
+	}
+}

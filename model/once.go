@@ -30,6 +30,10 @@ func (m onceModel) Stream(ctx context.Context, msgs []message.Message, tools []T
 	ch := make(chan Chunk, 1)
 	go func() {
 		defer close(ch)
+		if m.fn == nil {
+			ch <- Chunk{Err: errors.New("model: Once called with a nil GenerateFunc")}
+			return
+		}
 		resp, err := m.fn(ctx, msgs, tools)
 		if err != nil {
 			ch <- Chunk{Err: err}

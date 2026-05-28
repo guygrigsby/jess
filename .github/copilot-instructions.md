@@ -19,7 +19,7 @@ Then review the code itself. Judge it against the ADR and plan: flag deviations 
 
 - Pure Go, no CGO. Reject anything that introduces CGO without explicit discussion.
 - Dependency licenses: MIT, Apache-2.0, MPL-2.0, or BSD only. No GPL or AGPL.
-- Anti-corruption-layer boundary: `github.com/voocel/agentcore` must be imported only by files under `internal/acl/`. Flag any import of it elsewhere. The domain packages (`message`, `tool`, `event`, `subagent`, root `jess`) must stay vendor-free.
+- Anti-corruption-layer boundary: `github.com/voocel/agentcore` must be imported only by files under `internal/acl/`. The domain packages (`message`, `tool`, `event`, `model`, `subagent`, root `jess`) must stay vendor-free. Temporary exception until the Phase 4 migration: `memory/`, `skills/`, and `examples/` still import agentcore and are allowlisted in `internal/acl/boundary_test.go`; do not flag those existing imports. Flag any agentcore import in a domain package or any new one outside the allowlist.
 - Memory failures must never block an LLM call: the context-manager path degrades to no-memory, never no-agent. Preserve this when reviewing the inject path.
 - Do not vendor or fork dependencies to add features; missing upstream capability is filed upstream with a local TODO referencing the issue.
 - Documentation density: every exported type and function has a godoc; non-trivial design decisions get a short paragraph on why, not just what.
