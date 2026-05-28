@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 
 	ac "github.com/voocel/agentcore"
 
@@ -37,14 +38,16 @@ type Config struct {
 	MaxTurns     int             // 0 = agentcore default
 }
 
-// newACAgent builds an agentcore.Agent from a Config.
-func newACAgent(cfg Config) (*ac.Agent, error) {
+// newACAgent builds an agentcore.Agent from a Config. inject, when non-nil, is
+// threaded into every tool Execute context (e.g. to carry the active run's
+// event stream).
+func newACAgent(cfg Config, inject func(context.Context) context.Context) (*ac.Agent, error) {
 	if cfg.Model == nil {
 		return nil, errors.New("acl: Config.Model is required")
 	}
 	opts := []ac.AgentOption{ac.WithModel(ToAC(cfg.Model))}
 
-	tools := WrapTools(cfg.Tools)
+	tools := wrapToolsInject(cfg.Tools, inject)
 	var sysBlocks []ac.SystemBlock
 	if cfg.Skills != nil {
 		sysBlocks = cfg.Skills.SystemBlocks()
@@ -75,18 +78,31 @@ func newACAgent(cfg Config) (*ac.Agent, error) {
 // streams their translated events through a Run, enforces one run at a time,
 // and delegates mid-run input (Steer/FollowUp) and interruption (Abort).
 type Runtime struct {
-	agent   *ac.Agent
-	mu      sync.Mutex
-	running bool
+	agent     *ac.Agent
+	mu        sync.Mutex
+	running   bool
+	curStream atomic.Pointer[event.Stream]
 }
 
 // NewRuntime builds a Runtime from cfg.
 func NewRuntime(cfg Config) (*Runtime, error) {
-	agent, err := newACAgent(cfg)
+	rt := &Runtime{}
+	agent, err := newACAgent(cfg, rt.injectStream)
 	if err != nil {
 		return nil, err
 	}
-	return &Runtime{agent: agent}, nil
+	rt.agent = agent
+	return rt, nil
+}
+
+// injectStream adds the current run's stream to ctx when a run is active. It
+// is called on every tool Execute so the tool can forward events into the
+// parent run.
+func (rt *Runtime) injectStream(ctx context.Context) context.Context {
+	if s := rt.curStream.Load(); s != nil {
+		return event.ContextWithStream(ctx, s)
+	}
+	return ctx
 }
 
 // Result is the outcome of a finished Run.
@@ -172,6 +188,7 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 		return nil, ErrRunInProgress
 	}
 	run := newRun()
+	rt.curStream.Store(run.stream)
 
 	var unsub func()
 	unsub = rt.agent.Subscribe(func(ev ac.Event) {
@@ -192,12 +209,14 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 			rt.mu.Lock()
 			rt.running = false
 			rt.mu.Unlock()
+			rt.curStream.Store(nil)
 			close(run.done)
 		}
 	})
 
 	if err := startFn(); err != nil {
 		unsub()
+		rt.curStream.Store(nil)
 		run.stream.Close()
 		close(run.done)
 		if errors.Is(err, ac.ErrAlreadyRunning) {

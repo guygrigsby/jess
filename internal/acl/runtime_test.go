@@ -2,7 +2,9 @@ package acl
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/guygrigsby/jess/event"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/model"
+	"github.com/guygrigsby/jess/tool"
 )
 
 // echoOnce is a model.Model (via model.Once) that returns a fixed assistant
@@ -182,5 +185,74 @@ func TestRun_WaitCapturesError(t *testing.T) {
 	}
 	if _, werr := run.Wait(); werr == nil {
 		t.Fatal("Wait should report the run error, got nil")
+	}
+}
+
+// streamFnModel adapts a per-Stream-call function to a model.Model. Unlike
+// model.Once it can return a different chunk on each turn's Stream call.
+type streamFnModel struct {
+	fn func(context.Context, []message.Message, []model.ToolSpec) (model.Chunk, error)
+}
+
+func streamFn(fn func(context.Context, []message.Message, []model.ToolSpec) (model.Chunk, error)) model.Model {
+	return streamFnModel{fn: fn}
+}
+func (streamFnModel) SupportsTools() bool { return true }
+func (m streamFnModel) Stream(ctx context.Context, msgs []message.Message, tools []model.ToolSpec) (<-chan model.Chunk, error) {
+	ch := make(chan model.Chunk, 1)
+	go func() {
+		defer close(ch)
+		c, err := m.fn(ctx, msgs, tools)
+		if err != nil {
+			ch <- model.Chunk{Err: err}
+			return
+		}
+		ch <- c
+	}()
+	return ch, nil
+}
+
+// streamProbeTool records whether a run stream was injected into its ctx.
+type streamProbeTool struct{ saw chan bool }
+
+func (streamProbeTool) Name() string           { return "probe" }
+func (streamProbeTool) Description() string    { return "probe" }
+func (streamProbeTool) Schema() map[string]any { return map[string]any{"type": "object"} }
+func (p streamProbeTool) Execute(ctx context.Context, _ json.RawMessage) (json.RawMessage, error) {
+	_, ok := event.StreamFromContext(ctx)
+	p.saw <- ok
+	return json.RawMessage(`{"ok":true}`), nil
+}
+
+func TestRuntime_InjectsStreamIntoToolCtx(t *testing.T) {
+	var calls atomic.Int32
+	m := streamFn(func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (model.Chunk, error) {
+		if calls.Add(1) == 1 {
+			return model.Chunk{Done: true, StopReason: "tool_use", Message: message.Message{
+				Role:    message.RoleAssistant,
+				Content: []message.ContentBlock{{Kind: message.BlockToolCall, ToolID: "c1", ToolName: "probe", Args: []byte(`{}`)}},
+			}}, nil
+		}
+		return model.Chunk{Done: true, StopReason: "stop", Message: message.Message{
+			Role: message.RoleAssistant, Content: []message.ContentBlock{{Kind: message.BlockText, Text: "done"}},
+		}}, nil
+	})
+	probe := streamProbeTool{saw: make(chan bool, 1)}
+	rt, err := NewRuntime(Config{Model: m, Tools: []tool.Tool{probe}})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	run, err := rt.Prompt(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	_, _ = run.Wait()
+	select {
+	case sawStream := <-probe.saw:
+		if !sawStream {
+			t.Error("tool did not see an injected run stream in its context")
+		}
+	default:
+		t.Fatal("tool was never executed")
 	}
 }

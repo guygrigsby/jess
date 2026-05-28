@@ -128,13 +128,21 @@ func blockToAC(b message.ContentBlock) ac.ContentBlock {
 }
 
 // wrappedTool adapts a jess tool.Tool to agentcore.Tool. The interfaces are
-// structurally identical, so this delegates field-for-field.
-type wrappedTool struct{ t tool.Tool }
+// structurally identical, so this delegates field-for-field. inject, when
+// non-nil, is applied to the ctx before every Execute call — used to inject
+// the current run's event stream so tools can forward events into the parent.
+type wrappedTool struct {
+	t      tool.Tool
+	inject func(context.Context) context.Context
+}
 
 func (w wrappedTool) Name() string           { return w.t.Name() }
 func (w wrappedTool) Description() string    { return w.t.Description() }
 func (w wrappedTool) Schema() map[string]any { return w.t.Schema() }
 func (w wrappedTool) Execute(ctx context.Context, args json.RawMessage) (json.RawMessage, error) {
+	if w.inject != nil {
+		ctx = w.inject(ctx)
+	}
 	return w.t.Execute(ctx, args)
 }
 
@@ -146,6 +154,17 @@ func WrapTools(ts []tool.Tool) []ac.Tool {
 	out := make([]ac.Tool, 0, len(ts))
 	for _, t := range ts {
 		out = append(out, WrapTool(t))
+	}
+	return out
+}
+
+// wrapToolsInject adapts jess tools to agentcore.Tool, applying inject to each
+// Execute's context. inject is called on every tool invocation to thread in
+// dynamic state (e.g. the current run's event stream).
+func wrapToolsInject(ts []tool.Tool, inject func(context.Context) context.Context) []ac.Tool {
+	out := make([]ac.Tool, 0, len(ts))
+	for _, t := range ts {
+		out = append(out, wrappedTool{t: t, inject: inject})
 	}
 	return out
 }
