@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/guygrigsby/jess/internal/acl"
+	"github.com/guygrigsby/jess/message"
 )
 
 // Session is one conversation with an Agent: it holds the message history and
@@ -48,3 +49,14 @@ func wrapRun(r *acl.Run, err error) (*Run, error) {
 	}
 	return &Run{inner: r}, nil
 }
+
+// Steer injects a message into the running loop at the next safe point (soft
+// preemption). Intended for user messages.
+func (s *Session) Steer(msg message.Message) { s.rt.Steer(msg) }
+
+// FollowUp queues a message to be processed after the current run finishes.
+func (s *Session) FollowUp(msg message.Message) { s.rt.FollowUp(msg) }
+
+// Abort hard-cancels the current run (context cancellation); the model stream
+// is interrupted mid-token and the run ends with an aborted summary.
+func (s *Session) Abort() { s.rt.Abort() }
