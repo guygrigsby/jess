@@ -70,7 +70,7 @@ func newACAgent(cfg Config, inject func(context.Context) context.Context) (*ac.A
 		opts = append(opts, ac.WithMaxTurns(cfg.MaxTurns))
 	}
 	if cfg.Store != nil && cfg.Recaller != nil {
-		cm := memory.NewContextManager(cfg.Store, cfg.Recaller, memory.ContextManagerOptions{AgentID: cfg.AgentID})
+		cm := NewContextManager(cfg.Store, cfg.Recaller, ContextManagerOptions{AgentID: cfg.AgentID})
 		if cm != nil {
 			opts = append(opts, ac.WithContextManager(cm))
 		}
