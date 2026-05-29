@@ -221,3 +221,43 @@ func TestStreamAdapter_NoDoneChunkIsError(t *testing.T) {
 		t.Fatal("want error when stream ends without a done chunk")
 	}
 }
+
+// captureModel records the resolved MaxTokens from the CallOptions it receives.
+type captureModel struct{ genMax, streamMax int }
+
+func (m *captureModel) SupportsTools() bool { return true }
+func (m *captureModel) Generate(_ context.Context, _ []ac.Message, _ []ac.ToolSpec, opts ...ac.CallOption) (*ac.LLMResponse, error) {
+	var cc ac.CallConfig
+	for _, o := range opts {
+		o(&cc)
+	}
+	m.genMax = cc.MaxTokens
+	return &ac.LLMResponse{Message: ac.Message{Role: ac.RoleAssistant}}, nil
+}
+func (m *captureModel) GenerateStream(_ context.Context, _ []ac.Message, _ []ac.ToolSpec, opts ...ac.CallOption) (<-chan ac.StreamEvent, error) {
+	var cc ac.CallConfig
+	for _, o := range opts {
+		o(&cc)
+	}
+	m.streamMax = cc.MaxTokens
+	ch := make(chan ac.StreamEvent)
+	close(ch)
+	return ch, nil
+}
+
+func TestCappedChatModel_AppendsMaxTokens(t *testing.T) {
+	cap := &captureModel{}
+	capped := cappedChatModel{cm: cap, max: 99}
+	if _, err := capped.Generate(context.Background(), nil, nil); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, err := capped.GenerateStream(context.Background(), nil, nil); err != nil {
+		t.Fatalf("GenerateStream: %v", err)
+	}
+	if cap.genMax != 99 {
+		t.Errorf("Generate MaxTokens = %d, want 99", cap.genMax)
+	}
+	if cap.streamMax != 99 {
+		t.Errorf("GenerateStream MaxTokens = %d, want 99", cap.streamMax)
+	}
+}

@@ -8,8 +8,9 @@ import (
 // LiteLLMConfig holds litellm model construction settings. Build it with the
 // WithLLM* options passed to LiteLLM rather than populating it directly.
 type LiteLLMConfig struct {
-	APIKey  string
-	BaseURL string
+	APIKey    string
+	BaseURL   string
+	MaxTokens int
 }
 
 // LiteLLMOption configures a LiteLLM model at construction. Obtain from the
@@ -27,6 +28,12 @@ func WithLLMBaseURL(url string) LiteLLMOption {
 	return func(c *LiteLLMConfig) { c.BaseURL = url }
 }
 
+// WithLLMMaxTokens caps the model's max output tokens per call (0 = provider
+// default). Prevents over-long generations and provider 400s.
+func WithLLMMaxTokens(n int) LiteLLMOption {
+	return func(c *LiteLLMConfig) { c.MaxTokens = n }
+}
+
 // LiteLLM builds a cloud model backed by agentcore's litellm adapter and returns
 // it as a vendor-free model.Model, suitable for jess.WithModel. provider and
 // modelID are litellm identifiers, e.g. LiteLLM("openai","gpt-4o"). For a local
@@ -40,7 +47,8 @@ func LiteLLM(provider, modelID string, opts ...LiteLLMOption) (model.Model, erro
 		o(&cfg)
 	}
 	return acl.NewLiteLLMModel(provider, modelID, acl.LiteLLMConfig{
-		APIKey:  cfg.APIKey,
-		BaseURL: cfg.BaseURL,
+		APIKey:    cfg.APIKey,
+		BaseURL:   cfg.BaseURL,
+		MaxTokens: cfg.MaxTokens,
 	})
 }
