@@ -161,9 +161,30 @@ func (r *Run) captureEnd(ev ac.Event) {
 	defer r.mu.Unlock()
 	r.messages = messagesFromACAgent(ev.NewMessages)
 	r.summary = summaryFromAC(ev.Summary)
+	if r.summary != nil {
+		r.summary.Usage = usageFromACMessages(ev.NewMessages)
+	}
 	if r.err == nil {
 		r.err = ev.Err
 	}
+}
+
+// usageFromACMessages sums token usage over a run's messages. agentcore reports
+// usage per assistant message, so the run total is their sum. This is the
+// PER-RUN total — deliberately NOT Agent.TotalUsage(), which is cumulative
+// across the whole session and would leak earlier turns into a later result.
+func usageFromACMessages(msgs []ac.AgentMessage) event.Usage {
+	var u event.Usage
+	for _, m := range msgs {
+		acm, ok := m.(ac.Message)
+		if !ok || acm.Usage == nil {
+			continue
+		}
+		u.Input += acm.Usage.Input
+		u.Output += acm.Usage.Output
+		u.Total += acm.Usage.TotalTokens
+	}
+	return u
 }
 
 // captureErr records the first run error (from an EventError) so Wait reflects

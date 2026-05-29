@@ -35,6 +35,16 @@ type RunSummary struct {
 	Turns     int
 	ToolCalls int
 	EndReason string // stop, max_turns, aborted, error
+	Usage     Usage  // token usage aggregated over this run (zero if unreported)
+}
+
+// Usage reports token consumption aggregated over a single run. Input/Output
+// are prompt/completion tokens; Total is the reported total. Cache and cost
+// fields are intentionally omitted for now (add later, backward-compatibly).
+type Usage struct {
+	Input  int
+	Output int
+	Total  int
 }
 
 // Event is one observation from a run. Fields are populated according to Kind.
