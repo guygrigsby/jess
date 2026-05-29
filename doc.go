@@ -1,28 +1,32 @@
-// Package jess is a thin meta-package; the real surface lives in
-// its subpackages:
+// Package jess is a memory- and skill-augmented agent facade over
+// github.com/voocel/agentcore. The host calls jess; jess owns the agent run.
 //
-//   - jess/memory — durable agent memory: typed Kind with per-Kind
-//     retrieval policy, three pluggable Stores (in-memory, JSONL,
-//     chromem-go vector), a pure-Go in-process embedder (GoMLX +
-//     sentence-transformers, no CGO), Recallers that compose
-//     (Simple + Vector via RRF in HybridRecaller), a RememberTool
-//     the model calls to save facts, and a ContextManager adapter
-//     that injects layered memory into every agentcore LLM call.
-//   - jess/skills — registerable capability bundles. A Skill
-//     combines a name, description, system-prompt contribution,
-//     and zero-or-more agentcore.Tool implementations. Loaders
-//     discover skills from disk (Claude Code SKILL.md layout) or
-//     programmatically.
+// Construct an Agent once with jess.New and functional options, then drive a
+// conversation:
 //
-// jess sits on top of github.com/voocel/agentcore — it does NOT
-// re-implement the agent loop, provider abstraction, tool dispatch,
-// or permission engine. Hosts wire jess's extensions in via
-// agentcore's AgentOption surface.
+//	agent, _ := jess.New(
+//		jess.WithModel(m),                       // any model.Model (cloud via jess.LiteLLM, or local)
+//		jess.WithMemory(store, recaller),        // durable recall, injected each turn
+//		jess.WithSkills(set),                    // capability bundles
+//	)
+//	run, _ := agent.Prompt(ctx, "hello")
+//	for ev := range run.Events() { /* observe */ }
+//	res, _ := run.Wait()
 //
-// Why two packages, not one: memory and skills are independent
-// concerns with different stable surfaces. A host that wants only
-// memory shouldn't pull in skill loaders, and vice versa.
+// The surface lives in subpackages:
+//   - jess/message — Message, ContentBlock, Role
+//   - jess/event   — Event, EventKind, Stream (the observable run stream)
+//   - jess/tool    — the Tool interface the model invokes
+//   - jess/model   — the vendor-free streaming Model interface
+//   - jess/memory  — Store/Recaller/Entry/Kind, the remember & recall tools
+//   - jess/skill   — Skill, Set, Loader (capability bundles)
+//   - jess/subagent — bounded Pool for fast, abundant subagents
 //
-// See the package READMEs and the examples/ directory for runnable
-// wiring. Pre-1.0 — API may change before v1. See CHANGELOG.md.
+// agentcore (the loop, providers, tool dispatch, permission engine, context
+// compaction) is an internal implementation detail: it is imported only under
+// internal/acl, enforced by a boundary test. No agentcore type appears in
+// jess's public API, so the harness is swappable.
+//
+// Pre-1.0 — API may change before v1. See CHANGELOG.md and the examples/
+// directory for runnable wiring.
 package jess

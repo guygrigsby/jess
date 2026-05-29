@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/guygrigsby/jess/tool"
 )
 
-// RecallTool is the agentcore.Tool the model uses to query the
+// RecallTool is the tool.Tool the model uses to query the
 // memory store on demand. The host's auto-recall pass already
 // pulls relevant entries into the system prompt each turn, but
 // "what did I tell you about X" style questions need a way for
@@ -24,6 +26,9 @@ type RecallTool struct {
 	agentID  string
 	maxCap   int
 }
+
+// RecallTool is a jess tool.Tool; the agent calls it to query memory.
+var _ tool.Tool = (*RecallTool)(nil)
 
 // RecallOptions configures NewRecallTool. AgentID is required —
 // memories are agent-scoped and a recall without it returns
@@ -56,7 +61,7 @@ func NewRecallTool(store Store, recaller Recaller, opts RecallOptions) *RecallTo
 	}
 }
 
-// Name satisfies agentcore.Tool.
+// Name satisfies tool.Tool.
 func (t *RecallTool) Name() string { return "recall" }
 
 // Description is what the model sees. The phrasing is deliberate:
@@ -74,7 +79,7 @@ func (t *RecallTool) Description() string {
 		"in *.md files."
 }
 
-// Schema satisfies agentcore.Tool.
+// Schema satisfies tool.Tool.
 func (t *RecallTool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -105,7 +110,7 @@ type recallArgs struct {
 	Max   int    `json:"max,omitempty"`
 }
 
-// Execute satisfies agentcore.Tool. Decodes args, runs the
+// Execute satisfies tool.Tool. Decodes args, runs the
 // recaller (or store.Recall when a kind filter is supplied —
 // kind-scoped recall bypasses the semantic ranker so the model
 // gets deterministic results when it asks for "all user-kind

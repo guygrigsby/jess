@@ -1,10 +1,11 @@
-// Package skills adds registerable capability bundles on top of
-// agentcore.
+// Package skill provides registerable capability bundles for jess
+// agents, wired via jess.WithSkills and vendor-free (no agentcore
+// types in its API).
 //
 // A Skill is a unit of behavior an agent can opt into: a name and
 // description (the agent sees both in its system prompt), a
 // system-prompt contribution (instructions about how/when to use
-// the skill), and zero-or-more agentcore.Tool implementations
+// the skill), and zero-or-more tool implementations
 // (the actual callable surface).
 //
 // Skills are not a replacement for tools — they're a way to bundle
@@ -24,21 +25,20 @@
 //     looking for SKILL.md files (layout mirrors Claude Code's
 //     skill plugins — markdown frontmatter declares name +
 //     description + tools, body becomes the system-prompt
-//     contribution). A loader returns a Set, which the host
-//     turns into agentcore options.
+//     contribution). A loader returns a Set the host hands to jess.
 //
-// Integration with agentcore:
+// Integration:
 //
-//   - Set.SystemBlocks() returns a []agentcore.SystemBlock the host
-//     passes to agentcore.WithSystemBlocks.
-//   - Set.Tools() returns []agentcore.Tool the host passes to
-//     agentcore.WithTools.
+//   - Hand a Set to an agent via jess.WithSkills(set). jess converts
+//     the Set's system prompts and tools into the harness inside its
+//     anti-corruption layer; this package itself stays vendor-free
+//     (no agentcore types in its API).
 //
 // Hosts that want runtime add/remove (a /skill add command, say)
 // keep their own Set and rebuild the Agent on change. Hot-loading
 // without rebuild is out of scope for v0 — agentcore doesn't yet
 // expose runtime tool re-registration.
 //
-// Status: skeleton — interfaces shipped, real loaders land in
-// follow-up commits.
-package skills
+// Status: pre-1.0; the in-memory Set and the SKILL.md filesystem
+// loader are shipped. API may change before v1.
+package skill

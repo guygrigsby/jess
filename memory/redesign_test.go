@@ -7,8 +7,6 @@ import (
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/voocel/agentcore"
 )
 
 // ---- Kind + KindRegistry -------------------------------------------------
@@ -259,88 +257,6 @@ func TestRememberTool_AppliesKey_Supersedes(t *testing.T) {
 	}
 	if !strings.Contains(got[0].Text, "spaces") {
 		t.Errorf("surviving entry should be the latest; got %q", got[0].Text)
-	}
-}
-
-// ---- ContextManager layered formatting -----------------------------------
-
-func TestContextManager_AlwaysIncludeBypassesRecall(t *testing.T) {
-	store := NewInMemoryStore()
-	// One user fact + one project fact. user is AlwaysInclude;
-	// project is recall-only with low age weight.
-	_, _ = store.Append(context.Background(), Entry{
-		AgentID: "main", Kind: string(KindUser),
-		Text: "user is a senior engineer",
-	})
-	_, _ = store.Append(context.Background(), Entry{
-		AgentID: "main", Kind: string(KindProject),
-		Text: "current goal: ship feature X by Friday",
-	})
-
-	cm := NewContextManager(store, NewSimpleRecaller(), ContextManagerOptions{
-		AgentID: "main",
-	})
-
-	// Prompt the agent with text UNRELATED to either memory.
-	// The user fact should still appear (AlwaysInclude); the
-	// project fact may or may not (recall-only, unrelated text).
-	last := agentcore.Message{
-		Role: agentcore.Role("user"),
-		Content: []agentcore.ContentBlock{
-			agentcore.TextBlock("How do I write a Go map?"),
-		},
-	}
-	proj, err := cm.Project(context.Background(), []agentcore.AgentMessage{last})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(proj.Messages) != 2 {
-		t.Fatalf("expected memory + original, got %d msgs", len(proj.Messages))
-	}
-	memContent := proj.Messages[0].TextContent()
-	if !strings.Contains(memContent, "senior engineer") {
-		t.Errorf("user fact (AlwaysInclude) should appear regardless of relevance; got: %s", memContent)
-	}
-	if !strings.Contains(memContent, "Core memories") {
-		t.Errorf("core block should be labeled; got: %s", memContent)
-	}
-}
-
-func TestContextManager_RelevantBlockOnlyForRecallKinds(t *testing.T) {
-	store := NewInMemoryStore()
-	// Only project facts. With no AlwaysInclude entries, ALL
-	// surfaced memory should come from the Relevant block.
-	_, _ = store.Append(context.Background(), Entry{
-		AgentID: "main", Kind: string(KindProject),
-		Text: "Go generics use type parameters",
-	})
-	_, _ = store.Append(context.Background(), Entry{
-		AgentID: "main", Kind: string(KindProject),
-		Text: "the Rust ownership model is stricter than Go's",
-	})
-
-	cm := NewContextManager(store, NewSimpleRecaller(), ContextManagerOptions{
-		AgentID: "main",
-	})
-
-	last := agentcore.Message{
-		Role: agentcore.Role("user"),
-		Content: []agentcore.ContentBlock{
-			agentcore.TextBlock("Explain Go generics."),
-		},
-	}
-	proj, _ := cm.Project(context.Background(), []agentcore.AgentMessage{last})
-	if len(proj.Messages) < 2 {
-		// The unrelated entry might not survive scoring; that's OK.
-		// What matters: the relevant block is what appears, not core.
-		t.Fatal("expected at least the original + a memory message")
-	}
-	memContent := proj.Messages[0].TextContent()
-	if strings.Contains(memContent, "Core memories") {
-		t.Errorf("no AlwaysInclude entries exist; should NOT see Core block; got: %s", memContent)
-	}
-	if !strings.Contains(memContent, "Relevant memories") {
-		t.Errorf("expected Relevant block header; got: %s", memContent)
 	}
 }
 

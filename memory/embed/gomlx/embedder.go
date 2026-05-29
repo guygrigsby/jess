@@ -42,9 +42,9 @@ type Embedder struct {
 	dim     int
 	seqLen  int
 
-	tok    *tokenizer
-	exec   *mlcontext.Exec
-	mu     sync.Mutex
+	tok  *tokenizer
+	exec *mlcontext.Exec
+	mu   sync.Mutex
 }
 
 // Options configures NewEmbedder. Resolution order, highest
@@ -226,10 +226,10 @@ func meanPoolAndNormalize(hidden, attentionMask *Node) *Node {
 	masked := Mul(hidden, maskExpanded)
 
 	// Sum over seqLen.
-	sumHidden := ReduceSum(masked, 1)              // [batch, dim]
-	sumMask := ReduceSum(maskExpanded, 1)          // [batch, 1]
-	sumMaskClamped := MaxScalar(sumMask, 1e-9)     // avoid div-by-zero on all-pad
-	mean := Div(sumHidden, sumMaskClamped)         // [batch, dim]
+	sumHidden := ReduceSum(masked, 1)          // [batch, dim]
+	sumMask := ReduceSum(maskExpanded, 1)      // [batch, 1]
+	sumMaskClamped := MaxScalar(sumMask, 1e-9) // avoid div-by-zero on all-pad
+	mean := Div(sumHidden, sumMaskClamped)     // [batch, dim]
 
 	// L2 normalize: divide by sqrt(sum(x^2)) per row, with a small
 	// epsilon for numeric stability. ReduceSum collapses the last

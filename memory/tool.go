@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/guygrigsby/jess/tool"
 )
 
-// RememberTool is the agentcore.Tool the model uses to save a
+// RememberTool is the tool.Tool the model uses to save a
 // fact to memory. Hosts register it like any other tool:
 //
 //	store, _ := memory.NewChromemStore(emb, ...)
@@ -28,6 +30,9 @@ type RememberTool struct {
 	store   Store
 	agentID string
 }
+
+// RememberTool is a jess tool.Tool; the agent calls it to save a fact.
+var _ tool.Tool = (*RememberTool)(nil)
 
 // RememberOptions configures NewRememberTool. AgentID is required
 // because every saved Entry needs to be scoped to one agent (per
@@ -52,7 +57,7 @@ func NewRememberTool(store Store, opts RememberOptions) *RememberTool {
 	}
 }
 
-// Name satisfies agentcore.Tool.
+// Name satisfies tool.Tool.
 func (t *RememberTool) Name() string { return "remember" }
 
 // Description is what the model reads when deciding whether to
@@ -69,7 +74,7 @@ func (t *RememberTool) Description() string {
 		"(e.g. key='user.indent-preference' — re-saving with the same key replaces the old value)."
 }
 
-// Schema satisfies agentcore.Tool. JSON-schema describing the args
+// Schema satisfies tool.Tool. JSON-schema describing the args
 // the model is expected to produce.
 func (t *RememberTool) Schema() map[string]any {
 	return map[string]any{
@@ -111,7 +116,7 @@ type rememberArgs struct {
 	Reason string   `json:"reason,omitempty"`
 }
 
-// Execute satisfies agentcore.Tool. Decodes args, stamps source
+// Execute satisfies tool.Tool. Decodes args, stamps source
 // from ctx (if any), calls Store.Append. Returns JSON with the
 // saved entry's ID + creation time so the model can reference it
 // in its reply.

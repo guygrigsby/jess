@@ -3,13 +3,9 @@ package memory
 import (
 	"context"
 	"path/filepath"
-	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
-
-	"github.com/voocel/agentcore"
 )
 
 // fixedClock returns deterministic times so dedupe and recency tests
@@ -179,78 +175,4 @@ func TestSimpleRecaller_IncludeKindsFilter(t *testing.T) {
 			t.Errorf("reference entry leaked through IncludeKinds: %v", e)
 		}
 	}
-}
-
-// ContextManager wiring: Project should prepend the recalled
-// memories as a user message. Compact/Sync delegate to the inner
-// manager (the PassthroughInner default returns input unchanged).
-func TestContextManager_Project_PrependsMemoryMessage(t *testing.T) {
-	store := NewInMemoryStore()
-	_, _ = store.Append(context.Background(), Entry{Text: "user prefers concise replies", Kind: "user"})
-
-	cm := NewContextManager(store, NewSimpleRecaller(), ContextManagerOptions{})
-	if cm == nil {
-		t.Fatal("NewContextManager returned nil with valid inputs")
-	}
-
-	last := agentcore.Message{
-		Role:    agentcore.Role("user"),
-		Content: []agentcore.ContentBlock{agentcore.TextBlock("Tell me about Go modules concisely.")},
-	}
-	proj, err := cm.Project(context.Background(), []agentcore.AgentMessage{last})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(proj.Messages) != 2 {
-		t.Fatalf("expected 2 messages (memory + original), got %d", len(proj.Messages))
-	}
-	first := proj.Messages[0].TextContent()
-	if !strings.Contains(first, "user prefers concise replies") {
-		t.Errorf("memory message missing entry text: %q", first)
-	}
-}
-
-func TestContextManager_Project_EmptyRecallReturnsInputUntouched(t *testing.T) {
-	cm := NewContextManager(NewInMemoryStore(), NewSimpleRecaller(), ContextManagerOptions{})
-	input := []agentcore.AgentMessage{
-		agentcore.Message{Role: agentcore.Role("user"), Content: []agentcore.ContentBlock{agentcore.TextBlock("hi")}},
-	}
-	proj, err := cm.Project(context.Background(), input)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !reflect.DeepEqual(proj.Messages, input) {
-		t.Errorf("empty recall should pass through; got %v want %v", proj.Messages, input)
-	}
-}
-
-func TestContextManager_NilStoreOrRecaller_ReturnsNil(t *testing.T) {
-	if cm := NewContextManager(nil, NewSimpleRecaller(), ContextManagerOptions{}); cm != nil {
-		t.Error("nil Store should yield nil ContextManager")
-	}
-	if cm := NewContextManager(NewInMemoryStore(), nil, ContextManagerOptions{}); cm != nil {
-		t.Error("nil Recaller should yield nil ContextManager")
-	}
-}
-
-// Race regression: ContextManager.Project must be safe to call
-// concurrently — agentcore would never do that in production, but
-// hosts that share a ContextManager across goroutines shouldn't
-// hit data races.
-func TestContextManager_ConcurrentProject_RaceClean(t *testing.T) {
-	store := NewInMemoryStore()
-	_, _ = store.Append(context.Background(), Entry{Text: "concurrent fact"})
-	cm := NewContextManager(store, NewSimpleRecaller(), ContextManagerOptions{})
-
-	var wg sync.WaitGroup
-	for range 16 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, _ = cm.Project(context.Background(), []agentcore.AgentMessage{
-				agentcore.Message{Role: agentcore.Role("user"), Content: []agentcore.ContentBlock{agentcore.TextBlock("hi")}},
-			})
-		}()
-	}
-	wg.Wait()
 }
