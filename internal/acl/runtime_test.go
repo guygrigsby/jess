@@ -13,6 +13,7 @@ import (
 	"github.com/guygrigsby/jess/event"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/model"
+	"github.com/guygrigsby/jess/skill"
 	"github.com/guygrigsby/jess/tool"
 )
 
@@ -254,5 +255,46 @@ func TestRuntime_InjectsStreamIntoToolCtx(t *testing.T) {
 		}
 	default:
 		t.Fatal("tool was never executed")
+	}
+}
+
+// TestRuntime_InjectsStreamIntoSkillTool is the skill-contributed counterpart of
+// TestRuntime_InjectsStreamIntoToolCtx: a tool shipped via a skill.Set must also
+// receive the active run's event stream (the Phase 4 inject fix routes skill
+// tools through the same wrapToolsInject path as standalone tools).
+func TestRuntime_InjectsStreamIntoSkillTool(t *testing.T) {
+	var calls atomic.Int32
+	m := streamFn(func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (model.Chunk, error) {
+		if calls.Add(1) == 1 {
+			return model.Chunk{Done: true, StopReason: "tool_use", Message: message.Message{
+				Role:    message.RoleAssistant,
+				Content: []message.ContentBlock{{Kind: message.BlockToolCall, ToolID: "c1", ToolName: "probe", Args: []byte(`{}`)}},
+			}}, nil
+		}
+		return model.Chunk{Done: true, StopReason: "stop", Message: message.Message{
+			Role: message.RoleAssistant, Content: []message.ContentBlock{{Kind: message.BlockText, Text: "done"}},
+		}}, nil
+	})
+	probe := streamProbeTool{saw: make(chan bool, 1)}
+	set := skill.NewSet()
+	if err := set.Add(skill.Skill{Name: "prober", Tools: []any{probe}}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	rt, err := NewRuntime(Config{Model: m, Skills: set})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	run, err := rt.Prompt(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	_, _ = run.Wait()
+	select {
+	case sawStream := <-probe.saw:
+		if !sawStream {
+			t.Error("skill-contributed tool did not see an injected run stream in its context")
+		}
+	default:
+		t.Fatal("skill tool was never executed")
 	}
 }

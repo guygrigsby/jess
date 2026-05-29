@@ -47,16 +47,18 @@ func newACAgent(cfg Config, inject func(context.Context) context.Context) (*ac.A
 	}
 	opts := []ac.AgentOption{ac.WithModel(ToAC(cfg.Model))}
 
-	tools := wrapToolsInject(cfg.Tools, inject)
+	// Copy so appending skill tools never writes into the caller's cfg.Tools
+	// backing array (which could have spare capacity).
+	allTools := append([]tool.Tool(nil), cfg.Tools...)
 	var sysBlocks []ac.SystemBlock
 	if cfg.Skills != nil {
-		sysBlocks = cfg.Skills.SystemBlocks()
-		// NOTE: skill-contributed tools are appended as-is and do NOT get the
-		// run-stream injected into their context (only cfg.Tools do). A skill
-		// that ships a stream-aware tool (e.g. a subagent tool) would not see
-		// the parent stream. Revisit when skills move into the ACL (Phase 4).
-		tools = append(tools, cfg.Skills.Tools()...)
+		sysBlocks = skillSystemBlocks(cfg.Skills)
+		allTools = append(allTools, skillTools(cfg.Skills)...)
 	}
+	// Skill tools flow through the same inject path as standalone tools, so a
+	// skill-shipped stream-aware tool receives the active run's event stream.
+	tools := wrapToolsInject(allTools, inject)
+
 	if cfg.SystemPrompt != "" {
 		opts = append(opts, ac.WithSystemPrompt(cfg.SystemPrompt))
 	}

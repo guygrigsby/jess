@@ -25,17 +25,16 @@ type Skill struct {
 	Description  string
 	SystemPrompt string
 	// Tools is the slice of agent tools this skill contributes.
-	// Typed as `any` here to avoid importing agentcore from the
-	// surface — the host calls Set.Tools() which type-asserts
-	// the underlying []agentcore.Tool. Once jess is allowed to
-	// import agentcore at the package level (no cycle risk),
-	// this will be re-typed.
+	// Typed as `any` here to keep this package vendor-free: jess's
+	// anti-corruption layer type-asserts each entry to jess/tool.Tool
+	// when it wires the Set into an agent. Entries that don't
+	// implement tool.Tool are ignored.
 	Tools []any
 }
 
 // Set is a collection of skills keyed by Name. Construct with
-// NewSet, mutate with Add / Remove, surface to agentcore via
-// SystemBlocks() and Tools(). Safe for concurrent use.
+// NewSet, mutate with Add / Remove, and hand to an agent via
+// jess.WithSkills. Safe for concurrent use.
 type Set struct {
 	mu     sync.RWMutex
 	skills map[string]Skill
