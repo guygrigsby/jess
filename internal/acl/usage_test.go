@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"github.com/guygrigsby/jess/event"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/model"
 )
@@ -35,5 +36,40 @@ func TestRun_SummaryUsage_PerRunNotCumulative(t *testing.T) {
 	res2, _ := run2.Wait()
 	if res2.Summary == nil || res2.Summary.Usage.Input != 10 || res2.Summary.Usage.Total != 15 {
 		t.Fatalf("run2 usage = %+v, want only this run's tokens (Input 10 Total 15), not cumulative", res2.Summary)
+	}
+}
+
+// The streamed run_end event must carry the same usage as Wait() returns — a
+// host reading usage from Events() (not Wait) must not see zero.
+func TestRun_RunEndEvent_CarriesUsage(t *testing.T) {
+	m := streamFn(func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (model.Chunk, error) {
+		return model.Chunk{Done: true, StopReason: "stop", Message: message.Message{
+			Role: message.RoleAssistant, Content: []message.ContentBlock{{Kind: message.BlockText, Text: "ok"}},
+		}, Usage: model.Usage{Input: 7, Output: 3, TotalTokens: 10}}, nil
+	})
+	rt, err := NewRuntime(Config{Model: m})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	run, err := rt.Prompt(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+
+	var endUsage event.Usage
+	var sawEnd bool
+	for ev := range run.Events() {
+		if ev.Kind == event.KindRunEnd && ev.Summary != nil {
+			endUsage = ev.Summary.Usage
+			sawEnd = true
+		}
+	}
+	_, _ = run.Wait()
+
+	if !sawEnd {
+		t.Fatal("no run_end event observed")
+	}
+	if endUsage.Input != 7 || endUsage.Output != 3 || endUsage.Total != 10 {
+		t.Fatalf("run_end event usage = %+v, want Input 7 Output 3 Total 10", endUsage)
 	}
 }

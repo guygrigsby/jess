@@ -166,10 +166,7 @@ func (r *Run) captureEnd(ev ac.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.messages = messagesFromACAgent(ev.NewMessages)
-	r.summary = summaryFromAC(ev.Summary)
-	if r.summary != nil {
-		r.summary.Usage = usageFromACMessages(ev.NewMessages)
-	}
+	r.summary = runSummaryFromAC(ev)
 	if r.err == nil {
 		r.err = ev.Err
 	}

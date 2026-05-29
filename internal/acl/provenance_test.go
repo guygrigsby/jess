@@ -140,8 +140,13 @@ func TestRuntime_SourceClearedBetweenRuns(t *testing.T) {
 		t.Fatalf("Prompt 1: %v", err)
 	}
 	_, _ = run1.Wait()
-	if got := <-probe.saw; got != src {
-		t.Fatalf("run1 source = %+v, want %+v", got, src)
+	select {
+	case got := <-probe.saw:
+		if got != src {
+			t.Fatalf("run1 source = %+v, want %+v", got, src)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run1 tool was never executed")
 	}
 
 	run2, err := rt.Prompt(context.Background(), "go2") // no Source
@@ -149,7 +154,12 @@ func TestRuntime_SourceClearedBetweenRuns(t *testing.T) {
 		t.Fatalf("Prompt 2: %v", err)
 	}
 	_, _ = run2.Wait()
-	if got := <-probe.saw; got != (memory.Source{}) {
-		t.Fatalf("run2 saw stale Source %+v; curSource not cleared between runs", got)
+	select {
+	case got := <-probe.saw:
+		if got != (memory.Source{}) {
+			t.Fatalf("run2 saw stale Source %+v; curSource not cleared between runs", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("run2 tool was never executed")
 	}
 }
