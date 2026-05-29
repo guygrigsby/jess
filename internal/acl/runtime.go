@@ -88,6 +88,7 @@ type Runtime struct {
 	mu        sync.Mutex
 	running   bool
 	curStream atomic.Pointer[event.Stream]
+	curSource atomic.Pointer[memory.Source]
 }
 
 // NewRuntime builds a Runtime from cfg.
@@ -101,12 +102,17 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	return rt, nil
 }
 
-// injectStream adds the current run's stream to ctx when a run is active. It
-// is called on every tool Execute so the tool can forward events into the
-// parent run.
+// injectStream adds the current run's stream and memory provenance to ctx when
+// a run is active. It is called on every tool Execute so the tool can forward
+// events into the parent run and stamp written entries with the run's Source.
+// agentcore's incoming ctx (progressCtx with cancellation) is always the base;
+// we only append values, never substitute a different root context.
 func (rt *Runtime) injectStream(ctx context.Context) context.Context {
 	if s := rt.curStream.Load(); s != nil {
-		return event.ContextWithStream(ctx, s)
+		ctx = event.ContextWithStream(ctx, s)
+	}
+	if src := rt.curSource.Load(); src != nil {
+		ctx = memory.WithSource(ctx, *src)
 	}
 	return ctx
 }
@@ -216,6 +222,9 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 	}
 	run := newRun()
 	rt.curStream.Store(run.stream)
+	if src := memory.SourceFromContext(ctx); src != (memory.Source{}) {
+		rt.curSource.Store(&src)
+	}
 
 	var unsub func()
 	unsub = rt.agent.Subscribe(func(ev ac.Event) {
@@ -237,6 +246,7 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 			rt.running = false
 			rt.mu.Unlock()
 			rt.curStream.Store(nil)
+			rt.curSource.Store(nil)
 			close(run.done)
 		}
 	})
@@ -244,6 +254,7 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 	if err := startFn(); err != nil {
 		unsub()
 		rt.curStream.Store(nil)
+		rt.curSource.Store(nil)
 		run.stream.Close()
 		close(run.done)
 		if errors.Is(err, ac.ErrAlreadyRunning) {
