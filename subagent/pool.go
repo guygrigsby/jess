@@ -63,6 +63,7 @@ type job struct {
 	path  []string
 	sink  *event.Stream // nil => the pool's merged stream
 	task  *Task
+	ctx   context.Context // the Submit/SubmitTo ctx; aborts the running job when cancelled
 }
 
 // Option configures a Pool.
@@ -159,7 +160,7 @@ func (p *Pool) submit(ctx context.Context, sink *event.Stream, name, input strin
 	id := p.instance.Add(1)
 	path := append(append([]string(nil), parentPath...), fmt.Sprintf("%s/%04d", name, id))
 	task := &Task{agentPath: path, done: make(chan struct{})}
-	j := &job{spec: spec, input: input, path: path, sink: sink, task: task}
+	j := &job{spec: spec, input: input, path: path, sink: sink, task: task, ctx: ctx}
 
 	// Hold sendMu for reading across the send so Close cannot close tasks
 	// mid-send. The closed check (under the same lock) rejects submits after
@@ -192,7 +193,24 @@ func (p *Pool) runJob(j *job) {
 		j.task.err = err
 		return
 	}
-	run, err := rt.Prompt(p.ctx, j.input)
+	// Run under a context derived from BOTH the pool ctx (so pool teardown via
+	// Close/Cancel aborts the job) and the submit ctx (so cancelling
+	// Submit/SubmitTo's ctx aborts an already-running job — e.g. a parent run
+	// aborting its delegated subagent). The watcher exits when either ctx fires
+	// or the job ends (defer cancel -> runCtx.Done), so it cannot leak; at most
+	// MaxConcurrent watchers exist at once.
+	runCtx, cancel := context.WithCancel(p.ctx)
+	defer cancel()
+	if j.ctx != nil {
+		go func() {
+			select {
+			case <-j.ctx.Done():
+				cancel()
+			case <-runCtx.Done():
+			}
+		}()
+	}
+	run, err := rt.Prompt(runCtx, j.input)
 	if err != nil {
 		j.task.err = err
 		return

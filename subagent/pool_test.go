@@ -45,6 +45,45 @@ func TestPool_RunsTasksAndReturnsResults(t *testing.T) {
 	}
 }
 
+// TestPool_SubmitCtxAbortsRunningJob verifies that cancelling the ctx passed to
+// Submit aborts an already-running job (not just a queued one). Without ctx
+// propagation into runJob the model blocks forever and Task.Wait hangs.
+func TestPool_SubmitCtxAbortsRunningJob(t *testing.T) {
+	started := make(chan struct{}, 1)
+	blocker := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-ctx.Done() // block until the run is aborted
+		return nil, ctx.Err()
+	})
+	p := New(WithMaxConcurrent(1))
+	p.Register(Spec{Name: "blocker", Model: blocker})
+	defer p.Cancel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	task, err := p.Submit(ctx, "blocker", "go")
+	if err != nil {
+		t.Fatalf("Submit: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("job never started")
+	}
+
+	cancel() // cancel the submit ctx; the running job must abort
+
+	done := make(chan struct{})
+	go func() { _, _ = task.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("running job ignored submit-ctx cancellation; Task.Wait hung")
+	}
+}
+
 func TestPool_RespectsMaxConcurrent(t *testing.T) {
 	const limit = 3
 	var inFlight, maxSeen atomic.Int64
