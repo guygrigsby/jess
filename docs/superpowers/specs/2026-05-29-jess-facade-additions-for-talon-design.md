@@ -1,8 +1,9 @@
 # jess facade additions for the talon port — Design
 
-- Status: Approved (brainstormed 2026-05-29)
+- Status: Approved (brainstormed 2026-05-29; revised per pre-implementation review 2026-05-29)
 - Repo: `github.com/guygrigsby/jess`
 - Branch: `feat/facade-additions-for-talon`
+- Review: `2026-05-29-jess-facade-additions-for-talon-design-review.md` (all findings incorporated)
 
 ## Context
 
@@ -68,14 +69,20 @@ jess change needed for tools.
   ```
 
 - `event.RunSummary` gains `Usage Usage`.
-- The ACL populates it in `summaryFromAC` (or `captureEnd`) from the run's token
-  usage. Source of truth: agentcore reports usage on assistant messages
-  (`ac.Usage` on `StreamEventDone`, already mapped to `model.Usage` in
-  `internal/acl/model.go`) and/or on its run summary. Implementation aggregates
-  whichever agentcore exposes for the completed run; the plan picks the exact
-  agentcore field after confirming it. Zero-valued when the model reports none.
+- **Source of truth (corrected for agentcore v1.6.9):** agentcore's `RunSummary`
+  has no usage field, and `Agent.TotalUsage()` is CUMULATIVE across the session,
+  so it is wrong for a per-run result once Sessions are long-lived (it would leak
+  earlier turns' tokens into a later run). The ACL therefore aggregates
+  `ac.Message.Usage` over the current run's assistant messages in `captureEnd`,
+  reading `EventAgentEnd.NewMessages` (the same payload `captureEnd` already
+  consumes at `internal/acl/runtime.go:159-163`) BEFORE `messagesFromACAgent`
+  drops usage. Zero-valued when the model reports none.
 - Surfaced unchanged through `jess.Result` (`Result.Summary.Usage`) and the
   `event.KindRunEnd` event's `Summary`.
+- **Field scope (deliberate):** `event.Usage` carries `Input`/`Output`/`Total`
+  only. agentcore's usage also has cache-read / cache-write / cost; these are
+  omitted for now (talon needs input/output/total). Adding struct fields later is
+  backward-compatible, so this stays minimal (YAGNI).
 
 **Invariant:** usage is best-effort and never fails a run; if agentcore reports
 nothing, `Usage` is the zero value.
@@ -92,47 +99,61 @@ nothing, `Usage` is the zero value.
   func (a *Agent) NewSessionWithHistory(history []message.Message) (*Session, error)
   ```
 
-- ACL: the runtime translates `history` via the existing `messagesToAC` and calls
-  `agentcore.Agent.SetMessages` on the freshly constructed agent before any run.
+- ACL: the runtime translates `history` via the existing `messagesToAC` (which
+  returns `[]ac.Message`) and calls `agentcore.Agent.SetMessages`, which accepts
+  `[]ac.AgentMessage` (`agent.go:251`). Go slices are not covariant, so a small
+  ACL helper converts each `ac.Message` (it implements `ac.AgentMessage`) into an
+  `[]ac.AgentMessage` before the call.
 - `NewSession()` stays the empty case (equivalent to
   `NewSessionWithHistory(nil)`).
 - Roles supported by `messagesToAC` already cover user/assistant/system and
   tool-result blocks, which is what talon's `ChatStore` holds.
+- **Seeded system messages vs `WithSystemPrompt`:** seeded history is
+  conversation turns. The system prompt is configured separately via
+  `WithSystemPrompt`, and agentcore prepends it on every LLM call, so callers
+  must NOT also include the configured system prompt as a seeded system message
+  (it would be duplicated). The seeding API doc states this rule; how talon's
+  `ChatStore` maps to it is settled in sub-project 2.
 
 **Invariant:** seeding is a construction-time operation; it does not start a run
 and emits no events.
 
-### 3. Per-run memory provenance (ctx threading)
+### 3. Per-run memory provenance (ACL snapshots Source, re-applies onto the tool ctx)
 
-- The facade threads the context passed to `Session.Prompt`/`Continue` through to
-  each tool's `Execute`, composed with the ACL's existing run-stream injection
-  (`event.ContextWithStream`). A host stamps per-run values on the Prompt ctx and
-  tools observe them:
+The host stamps the per-run Source on the ctx it passes to
+`Session.Prompt`/`Continue` (jess accepts a ctx there, even though agentcore's
+`Agent.Prompt` does not):
 
-  ```go
-  run, _ := sess.Prompt(memory.WithSource(ctx, memory.Source{
-      SessionID: sessionKey, MessageID: runID, Tool: "remember", Reason: "model decided",
-  }), userText)
-  ```
+```go
+run, _ := sess.Prompt(memory.WithSource(ctx, memory.Source{
+    SessionID: sessionKey, MessageID: runID, Tool: "remember", Reason: "model decided",
+}), userText)
+```
 
-  The memory `RememberTool`/`RecallTool` read `memory.SourceFromContext(ctx)` as
-  they do today, so writes during the run are stamped.
+The memory `RememberTool`/`RecallTool` read `memory.SourceFromContext(ctx)` as
+they do today, so writes during the run are stamped.
 
-- Implementation: the ACL's tool wrapper builds each Execute ctx from the active
-  run's ctx (the one passed to `Prompt`) and then applies the stream inject,
-  rather than starting from a background/loop ctx that drops caller values. The
-  plan verifies whether agentcore already forwards the run ctx to tool execution;
-  if it does, this is a no-op confirmation plus a test; if it does not, the
-  runtime records the Prompt ctx and uses it as the base for the tool Execute
-  ctx. Either way the observable contract is "values on the Prompt ctx reach
-  tools."
+**Mechanism (corrected for agentcore v1.6.9):** the run ctx cannot be threaded to
+tools generically. `agentcore.Agent.Prompt` takes no context; it starts the loop
+with `context.Background()` (`agent.go:287`,`308`) and tools receive agentcore's
+own `progressCtx` (`loop.go:874-934`), which carries the cancellation/progress
+state `Session.Abort()` depends on. So the ACL must NOT substitute its ctx for
+agentcore's (that would drop cancellation, and Go contexts are not enumerable so
+arbitrary values cannot be copied across). Instead:
 
-**Why ctx threading over a dedicated `WithSource` option:** provenance is
-per-run (the `MessageID`/runID changes every turn), so it cannot live on the
-long-lived Agent config; threading the Prompt ctx is the least-surface way to
-carry any per-run value (not just memory Source) and reuses the existing inject
-seam. No memory type enters a new public API surface beyond what `WithMemory`
-already implies.
+- At run start the runtime snapshots `memory.SourceFromContext(promptCtx)` from
+  the jess-level ctx it already holds (the one wired to the abort bridge) onto the
+  active run.
+- The existing per-Execute inject seam (today `event.ContextWithStream`) is
+  extended to also apply `memory.WithSource(toolCtx, snapshot)` when a Source was
+  set, keeping agentcore's incoming `progressCtx` as the BASE. Cancellation,
+  progress, and `Session.Abort()` are therefore unaffected.
+
+This narrows the feature to the concrete need (memory provenance) rather than a
+general ctx pass-through, which is not implementable against v1.6.9 without an
+agentcore API that accepts the run ctx. The ACL already imports `jess/memory`, so
+referencing `memory.Source` here introduces no boundary issue. If agentcore later
+adds a ctx-accepting `Prompt`, this can generalize.
 
 ### 4. LiteLLM token cap
 
@@ -144,9 +165,19 @@ already implies.
   func WithLLMMaxTokens(n int) LiteLLMOption
   ```
 
-- `LiteLLMConfig` gains `MaxTokens int`; `acl.NewLiteLLMModel` applies it to the
-  agentcore litellm model via agentcore's max-tokens call option (the behavior
-  talon's `cappedChatModel` wraps today).
+- `LiteLLMConfig` gains `MaxTokens int`.
+
+**Mechanism (corrected for agentcore v1.6.9):** `agentcore.WithMaxTokens` is a
+per-CALL `CallOption` consumed by `Generate`/`GenerateStream` (`llm/litellm.go:557-592`);
+it is NOT a `llm.NewModel` construction option (`llm/litellm.go:70-124`), and the
+agent loop builds its own call options (appending only thinking options,
+`loop.go:589-599`). So setting it at construction has nowhere to take effect.
+Therefore, when `MaxTokens > 0`, `acl.NewLiteLLMModel` wraps the native
+`ac.ChatModel` in an ACL-local capping model that appends `ac.WithMaxTokens(n)`
+to the options on every `Generate` and `GenerateStream` call before delegating
+(talon's current `cappedChatModel` behavior, moved into the ACL).
+`MaxTokens == 0` returns the native model unwrapped.
+
 - `jess.LiteLLM(provider, modelID, WithLLMAPIKey, WithLLMBaseURL,
   WithLLMMaxTokens)` then covers talon's full model-construction need (provider,
   model, per-provider key/base-url override, cap).
@@ -166,16 +197,20 @@ to a released/pseudo version once these additions land.
 ## Testing and enforcement
 
 - **Usage:** a scripted fake `model.Model` returns chunks carrying `model.Usage`;
-  assert `Result.Summary.Usage` aggregates Input/Output/Total; assert zero when
-  the model reports none.
+  assert `Result.Summary.Usage` aggregates Input/Output/Total and is zero when the
+  model reports none. AND a two-run, same-`Session` test asserts the second run's
+  usage reflects only that run (guards against cumulative leak).
 - **History seeding:** `NewSessionWithHistory(msgs)`; drive one Prompt through a
   fake model that echoes the messages it received; assert the seeded history is
   present ahead of the new turn. Cover user/assistant/tool-result roles.
-- **Provenance:** a source-probe `tool.Tool` records `memory.SourceFromContext`;
-  call `Prompt(memory.WithSource(ctx, src), ...)` with a fake model that emits a
-  tool call; assert the probe saw `src`.
-- **Max tokens:** a fake/captured litellm path asserts the max-tokens call option
-  reaches the model call (table value in / value out).
+- **Provenance:** (a) a source-probe `tool.Tool` records
+  `memory.SourceFromContext`; call `Prompt(memory.WithSource(ctx, src), ...)`
+  with a fake model that emits a tool call; assert the probe saw `src`. (b) a
+  blocking tool plus a direct `Session.Abort()` asserts the tool's ctx IS
+  cancelled, proving agentcore's progress/cancel ctx was preserved (not replaced).
+- **Max tokens:** a fake `ac.ChatModel` captures the resolved `CallOption`s;
+  assert `WithMaxTokens(n)` is appended on BOTH `Generate` and `GenerateStream`
+  when set, and absent when `MaxTokens == 0`.
 - All under `-race`; the `TestAgentcoreImportBoundary` test stays green (empty
   allowlist); `go vet`, `make lint`, `make license-audit` clean.
 
@@ -186,5 +221,20 @@ to a released/pseudo version once these additions land.
   becomes sufficient to fully replace direct agentcore use for a real app.
 - Cost: four small public-API additions to maintain; one more agentcore field
   the ACL must track (run usage).
-- Risk: agentcore's run-usage and tool-ctx semantics are the two unknowns; both
-  are confined to `internal/acl` and covered by the plan's verification steps.
+- Risk: low. The two agentcore unknowns (per-run usage source, tool-ctx
+  semantics) were resolved against v1.6.9 during review: usage aggregates from
+  `EventAgentEnd.NewMessages`, and provenance re-applies `memory.Source` onto
+  agentcore's preserved tool ctx (no ctx substitution). All coupling stays in
+  `internal/acl`. The main maintenance surface is a future agentcore upgrade that
+  changes message-usage or call-option plumbing.
+
+## Resolved during review
+
+- **`event.Usage` fields:** Input/Output/Total only, deliberately (addition 1).
+  Cache and cost fields are omitted now; struct fields can be added later without
+  breaking callers.
+- **Seeded system messages vs `WithSystemPrompt`:** the seeding API documents that
+  the system prompt is configured via `WithSystemPrompt` (agentcore prepends it
+  each call) and must not be duplicated in seeded history (addition 2). Whether
+  talon's `ChatStore` persists system rows, and the exact mapping, is settled in
+  sub-project 2.
