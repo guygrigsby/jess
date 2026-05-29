@@ -40,10 +40,13 @@ func main() {
 		for _, m := range msgs {
 			fmt.Fprintf(&b, "[%s] %s\n", m.Role, m.Text())
 		}
-		return &model.Response{Message: message.Message{
-			Role:    message.RoleAssistant,
-			Content: []message.ContentBlock{{Kind: message.BlockText, Text: b.String()}},
-		}}, nil
+		return &model.Response{
+			Message: message.Message{
+				Role:    message.RoleAssistant,
+				Content: []message.ContentBlock{{Kind: message.BlockText, Text: b.String()}},
+			},
+			StopReason: "stop",
+		}, nil
 	})
 
 	// 3. Wire it all behind the facade.

@@ -59,8 +59,12 @@ func (t *Task) AgentPath() []string {
 	return append([]string(nil), t.agentPath...)
 }
 
-// Wait blocks until the task finishes and returns its result and error.
+// Wait blocks until the task finishes and returns its result and error. The
+// returned Result carries a fresh copy of AgentPath, so a caller mutating it
+// cannot corrupt the task's stored path or a later Wait call's result.
 func (t *Task) Wait() (Result, error) {
 	<-t.done
-	return t.res, t.err
+	res := t.res
+	res.AgentPath = append([]string(nil), t.res.AgentPath...)
+	return res, t.err
 }

@@ -23,3 +23,17 @@ func TestTask_AgentPathReturnsCopy(t *testing.T) {
 		t.Fatal("AgentPath must return a copy; caller mutation leaked into the task")
 	}
 }
+
+func TestTask_WaitResultAgentPathIsCopy(t *testing.T) {
+	tk := &Task{agentPath: []string{"research/0001"}, done: make(chan struct{})}
+	tk.res = Result{AgentPath: tk.agentPath}
+	close(tk.done)
+
+	r1, _ := tk.Wait()
+	r1.AgentPath[0] = "mutated"
+
+	r2, _ := tk.Wait()
+	if r2.AgentPath[0] != "research/0001" {
+		t.Fatalf("Wait must return a fresh AgentPath copy; caller mutation leaked (got %q)", r2.AgentPath[0])
+	}
+}
