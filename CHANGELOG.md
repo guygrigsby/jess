@@ -14,6 +14,8 @@ what the rules become at v1.
 - **Breaking:** package `skills` renamed to `skill`.
 - The memory `ContextManager` adapter moved from `memory` into `internal/acl`; hosts wire memory via `jess.WithMemory(store, recaller)` instead of constructing a `ContextManager`.
 - `memory.RememberTool` / `memory.RecallTool` now implement `jess/tool.Tool`.
+- `entryID` hash now includes `Entry.Key` so semantically distinct entries with the same text but different keys get distinct IDs.
+- JSONL on-disk schema added optional `key` + `source` fields. Older files decode cleanly (missing = zero-valued).
 
 ### Added
 - Root `jess` package, `jess/message`, `jess/event`, `jess/tool`, `jess/model`, `jess/subagent` (bounded Pool), and the `internal/acl` anti-corruption layer.
@@ -44,12 +46,6 @@ what the rules become at v1.
   `memory.NewJSONLStore` (with `Compact()` to drop tombstones).
 - `skill` package: `Skill`, `Set`, `Loader`, filesystem loader
   reading SKILL.md frontmatter (Claude Code skill layout).
-
-### Changed
-- `entryID` hash now includes `Entry.Key` so semantically distinct
-  entries with the same text but different keys get distinct IDs.
-- JSONL on-disk schema added optional `key` + `source` fields. Older
-  files decode cleanly (missing = zero-valued).
 
 ### Deps
 - `github.com/voocel/agentcore` — pinned to main commit (post-PR-409

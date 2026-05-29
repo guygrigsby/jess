@@ -39,6 +39,6 @@
 // without rebuild is out of scope for v0 — agentcore doesn't yet
 // expose runtime tool re-registration.
 //
-// Status: skeleton — interfaces shipped, real loaders land in
-// follow-up commits.
+// Status: pre-1.0; the in-memory Set and the SKILL.md filesystem
+// loader are shipped. API may change before v1.
 package skill

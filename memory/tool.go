@@ -57,7 +57,7 @@ func NewRememberTool(store Store, opts RememberOptions) *RememberTool {
 	}
 }
 
-// Name satisfies agentcore.Tool.
+// Name satisfies tool.Tool.
 func (t *RememberTool) Name() string { return "remember" }
 
 // Description is what the model reads when deciding whether to
@@ -74,7 +74,7 @@ func (t *RememberTool) Description() string {
 		"(e.g. key='user.indent-preference' — re-saving with the same key replaces the old value)."
 }
 
-// Schema satisfies agentcore.Tool. JSON-schema describing the args
+// Schema satisfies tool.Tool. JSON-schema describing the args
 // the model is expected to produce.
 func (t *RememberTool) Schema() map[string]any {
 	return map[string]any{
@@ -116,7 +116,7 @@ type rememberArgs struct {
 	Reason string   `json:"reason,omitempty"`
 }
 
-// Execute satisfies agentcore.Tool. Decodes args, stamps source
+// Execute satisfies tool.Tool. Decodes args, stamps source
 // from ctx (if any), calls Store.Append. Returns JSON with the
 // saved entry's ID + creation time so the model can reference it
 // in its reply.
