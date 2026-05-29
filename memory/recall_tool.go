@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+
+	"github.com/guygrigsby/jess/tool"
 )
 
-// RecallTool is the agentcore.Tool the model uses to query the
+// RecallTool is the tool.Tool the model uses to query the
 // memory store on demand. The host's auto-recall pass already
 // pulls relevant entries into the system prompt each turn, but
 // "what did I tell you about X" style questions need a way for
@@ -24,6 +26,9 @@ type RecallTool struct {
 	agentID  string
 	maxCap   int
 }
+
+// RecallTool is a jess tool.Tool; the agent calls it to query memory.
+var _ tool.Tool = (*RecallTool)(nil)
 
 // RecallOptions configures NewRecallTool. AgentID is required —
 // memories are agent-scoped and a recall without it returns

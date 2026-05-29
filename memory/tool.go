@@ -5,9 +5,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+
+	"github.com/guygrigsby/jess/tool"
 )
 
-// RememberTool is the agentcore.Tool the model uses to save a
+// RememberTool is the tool.Tool the model uses to save a
 // fact to memory. Hosts register it like any other tool:
 //
 //	store, _ := memory.NewChromemStore(emb, ...)
@@ -28,6 +30,9 @@ type RememberTool struct {
 	store   Store
 	agentID string
 }
+
+// RememberTool is a jess tool.Tool; the agent calls it to save a fact.
+var _ tool.Tool = (*RememberTool)(nil)
 
 // RememberOptions configures NewRememberTool. AgentID is required
 // because every saved Entry needs to be scoped to one agent (per
