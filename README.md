@@ -5,29 +5,40 @@
 [![CI](https://github.com/guygrigsby/jess/actions/workflows/test.yml/badge.svg)](https://github.com/guygrigsby/jess/actions/workflows/test.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-Memory and skills for [agentcore](https://github.com/voocel/agentcore)-based
-Go agents. The leather strap on the falcon's leg.
+A memory- and skill-augmented agent facade for Go. The leather strap
+on the falcon's leg.
 
 ## What it is
 
-Two extension packages that sit on top of `agentcore`:
+`jess` is the thing the host calls. `jess.New` returns an `Agent`;
+`Agent` and `Session` drive runs and expose a live `event` stream. The
+host wires a model, durable memory, and capability bundles through
+functional options and never touches the underlying harness.
+
+- **`jess` (root)** — the facade. `jess.New(opts...) -> *Agent`,
+  `Agent.Prompt`/`Continue`/`NewSession`, `Run.Events()`/`Wait()`.
+  Options: `WithModel`, `WithAgentID`, `WithSystemPrompt`, `WithTools`,
+  `WithMemory`, `WithSkills`, `WithMaxTurns`.
 
 - **`jess/memory`** — durable agent memory. Typed `Kind` (user, feedback,
   project, reference) with per-kind retrieval policy. Three pluggable
   Stores (in-memory, JSONL, chromem-go vector). A pure-Go embedder
   (GoMLX + sentence-transformers, no CGO). Recallers compose:
   `SimpleRecaller` (token overlap) + `VectorRecaller` (cosine) fused
-  via `HybridRecaller` (reciprocal rank fusion). `RememberTool` lets
-  the model save to memory. `ContextManager` adapter injects layered
-  memory (always-on core + relevance-recalled) into every LLM call.
+  via `HybridRecaller` (reciprocal rank fusion). `RememberTool` and
+  `RecallTool` let the model write and read memory. Wired via
+  `jess.WithMemory(store, recaller)`; recalled entries are injected on
+  every turn.
 
-- **`jess/skills`** — registerable capability bundles. A `Skill` is a
+- **`jess/skill`** — registerable capability bundles. A `Skill` is a
   name, description, system-prompt contribution, and zero-or-more
-  `agentcore.Tool` implementations. Loads from disk (filesystem
-  layout mirrors Claude Code skills) or by direct registration.
+  tools. Loads from disk (filesystem layout mirrors Claude Code skills)
+  or by direct registration. Wired via `jess.WithSkills(set)`.
 
-Nothing here duplicates `agentcore`. The harness, providers, tool
-dispatch, permission engine, and context compaction stay upstream.
+[agentcore](https://github.com/voocel/agentcore) (the loop, providers,
+tool dispatch, permission engine, context compaction) is an internal
+implementation detail, imported only under `internal/acl` and enforced
+by a boundary test. No agentcore type appears in jess's public API.
 
 ## Install
 
@@ -40,71 +51,79 @@ every OS/arch combo `go build` supports.
 
 ## Quickstart
 
-Full runnable example at [`examples/quickstart`](./examples/quickstart).
-Sketch:
+Full runnable, offline example at
+[`examples/quickstart`](./examples/quickstart). Sketch:
 
 ```go
 import (
-    "github.com/voocel/agentcore"
+    "github.com/guygrigsby/jess"
+    "github.com/guygrigsby/jess/event"
     "github.com/guygrigsby/jess/memory"
-    "github.com/guygrigsby/jess/memory/embed/gomlx"
+    "github.com/guygrigsby/jess/message"
 )
 
-// 1. In-process embedder (downloads ~90MB model on first use,
-//    cached after; no API key, no subprocess). Empty Options
-//    picks gomlx.DefaultModel (MiniLM-L6-v2). For other models
-//    use a known-good constant:
-//      gomlx.Options{Model: gomlx.ModelNomicEmbedText_V1_5}
-//    Or pass a custom HF repo and let NewEmbedder auto-detect
-//    Dim+SeqLen from config.json:
-//      gomlx.Options{ModelID: "your-org/your-model"}
-emb, _ := gomlx.NewEmbedder(gomlx.Options{})
-
-// 2. Vector store backed by chromem-go. Path persists to gob on disk.
-store, _ := memory.NewChromemStore(emb, memory.ChromemOptions{
-    Path: "~/.cache/myapp/memory",
+// 1. Durable memory. Seed a core (always-include) user fact. Swap
+//    InMemoryStore for JSONLStore or ChromemStore (+ memory/embed/gomlx)
+//    for persistence or vector recall.
+store := memory.NewInMemoryStore()
+store.Append(ctx, memory.Entry{
+    AgentID: "demo",
+    Kind:    string(memory.KindUser), // AlwaysInclude: injected every turn
+    Text:    "User prefers concise, example-first answers.",
 })
 
-// 3. The "remember" tool the model can call.
-tool := memory.NewRememberTool(store, memory.RememberOptions{
-    AgentID: "main",
-})
-
-// 4. Hybrid retrieval: vector for semantic matches, token overlap
-//    for keyword-exact, RRF-fused.
-recaller := memory.NewHybridRecaller(
-    memory.NewVectorRecaller(),
-    memory.NewSimpleRecaller(),
+// 2. Build the agent behind the facade. Pass any model.Model:
+//    a cloud model from jess.LiteLLM(provider, modelID), or a local
+//    one (implement model.Model or use model.Once).
+agent, err := jess.New(
+    jess.WithModel(yourModel),
+    jess.WithAgentID("demo"),
+    jess.WithMemory(store, memory.NewSimpleRecaller()),
 )
+if err != nil {
+    log.Fatal(err)
+}
 
-// 5. ContextManager: injects core + relevant memories on every turn.
-cm := memory.NewContextManager(store, recaller, memory.ContextManagerOptions{
-    AgentID: "main",
-})
+// 3. Drive a run and observe its event stream.
+run, _ := agent.Prompt(ctx, "What kind of answers do I like?")
+for ev := range run.Events() {
+    switch ev.Kind {
+    case event.KindToolStart:
+        fmt.Printf("-> tool %s\n", ev.Tool)
+    case event.KindError:
+        fmt.Printf("! error: %v\n", ev.Err)
+    }
+}
 
-// 6. Wire into agentcore.
-agent := agentcore.NewAgent(
-    agentcore.WithModel(yourModel),
-    agentcore.WithTools(tool, /* ...your other tools... */),
-    agentcore.WithContextManager(cm),
-)
+// 4. Final result: the assistant messages, plus a run summary.
+res, _ := run.Wait()
+for _, m := range res.Messages {
+    if m.Role == message.RoleAssistant {
+        fmt.Println(m.Text())
+    }
+}
 ```
 
-The agent now:
+The agent:
 - Sees `user` and `feedback` memories on every turn (always-include).
 - Sees `project` and `reference` memories when they're relevant.
-- Can save new facts via the `remember` tool.
-- Persists across restarts.
+- Can save and query facts via the `remember` / `recall` tools.
+- Persists across restarts (with a durable Store).
 
 ## Project layout
 
 ```
 jess/
+├── agent.go, options.go, litellm.go  # the facade: jess.New, Agent, Session, options
+├── message/                      # Message, ContentBlock, Role
+├── event/                        # Event, EventKind, Stream (the run stream)
+├── tool/                         # the Tool interface the model invokes
+├── model/                        # vendor-free streaming Model interface (model.Once, ToolSpec)
 ├── memory/                       # the memory subsystem
 │   ├── memory.go                 # Entry, Store, Query, Recaller, VectorStore
 │   ├── kind.go                   # Kind constants, KindPolicy, KindRegistry
-│   ├── tool.go                   # RememberTool (agentcore.Tool)
-│   ├── context_manager.go        # agentcore.ContextManager adapter
+│   ├── tool.go                   # RememberTool (tool.Tool)
+│   ├── recall_tool.go            # RecallTool (tool.Tool)
 │   ├── store_inmemory.go         # InMemoryStore
 │   ├── store_jsonl.go            # JSONLStore (durable, tombstones, Compact)
 │   ├── store_chromem.go          # ChromemStore (vector, on chromem-go)
@@ -112,10 +131,11 @@ jess/
 │   ├── recall_vector.go          # VectorRecaller + HybridRecaller (RRF)
 │   ├── embedder.go               # Embedder interface
 │   └── embed/gomlx/              # in-process pure-Go embedder
-└── skills/                       # skill bundles
-    ├── skill.go                  # Skill, Set, Loader
-    ├── agentcore.go              # SystemBlocks + Tools conversion
-    └── filesystem.go             # SKILL.md walker (Claude Code layout)
+├── skill/                        # skill bundles
+│   ├── skill.go                  # Skill, Set, Loader
+│   └── filesystem.go             # SKILL.md walker (Claude Code layout)
+├── subagent/                     # bounded Pool for fast, abundant subagents
+└── internal/acl/                 # anti-corruption layer: the ONLY agentcore importer
 ```
 
 ## Design choices
@@ -197,8 +217,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow.
 
 ## Status
 
-Pre-1.0. API may change before v1; both subpackages have shipping
-implementations with test coverage. See [CHANGELOG.md](CHANGELOG.md).
+Pre-1.0. API may change before v1; the facade and its subpackages have
+shipping implementations with test coverage. See
+[CHANGELOG.md](CHANGELOG.md).
 
 Two upstream deps pinned to main (not a tagged release):
 

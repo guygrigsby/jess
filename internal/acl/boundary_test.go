@@ -9,25 +9,10 @@ import (
 	"testing"
 )
 
-// preMigrationAgentcoreImporters are the files that still import agentcore
-// outside the ACL while the encapsulation (ADR 0001) is in progress. Phase 4
-// relocates the memory adapter and skills conversion into internal/acl and
-// rewrites doc.go + the quickstart, after which this allowlist shrinks to
-// nothing and the boundary becomes "only internal/acl".
-//
-// TODO(ADR-0001 Phase 4): delete these entries; the only allowed importer is
-// internal/acl.
-var preMigrationAgentcoreImporters = []string{
-	"memory/",
-	"skill/",
-	"examples/",
-}
-
-// TestAgentcoreImportBoundary fails if any package outside internal/acl (and
-// the temporary pre-migration allowlist) imports github.com/voocel/agentcore.
-// This enforces ADR 0001's anti-corruption-layer boundary, protecting the new
-// vendor-free domain packages (message, event, tool, subagent, root jess) from
-// leaking the harness.
+// TestAgentcoreImportBoundary fails if any package outside internal/acl imports
+// github.com/voocel/agentcore. This enforces ADR 0001's anti-corruption-layer
+// boundary, keeping the vendor-free domain packages (message, event, tool,
+// model, subagent, memory, skill, root jess) free of the harness.
 //
 // It parses each file's import declarations (parser.ImportsOnly) rather than
 // scanning the raw bytes, so a mere mention of the path in a comment or string
@@ -40,16 +25,7 @@ func TestAgentcoreImportBoundary(t *testing.T) {
 	const dep = "github.com/voocel/agentcore"
 
 	allowed := func(rel string) bool {
-		rel = filepath.ToSlash(rel)
-		if strings.HasPrefix(rel, "internal/acl/") {
-			return true
-		}
-		for _, p := range preMigrationAgentcoreImporters {
-			if p == rel || (strings.HasSuffix(p, "/") && strings.HasPrefix(rel, p)) {
-				return true
-			}
-		}
-		return false
+		return strings.HasPrefix(filepath.ToSlash(rel), "internal/acl/")
 	}
 
 	fset := token.NewFileSet()

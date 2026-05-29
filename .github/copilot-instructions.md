@@ -2,9 +2,9 @@
 
 ## What this repo is
 
-`jess` is two extension packages on top of [`agentcore`](https://github.com/voocel/agentcore): durable agent memory (`memory/`) and registerable capability bundles (`skills/`). It is pure Go, no CGO (to preserve cross-compilation). It deliberately does not reimplement the agentcore harness, providers, tool dispatch, permission engine, or compaction.
+`jess` is a memory- and skill-augmented agent facade over [`agentcore`](https://github.com/voocel/agentcore): the host calls `jess.New` to build an `Agent`, then drives runs via `Agent`/`Session` and observes the `event` stream. It adds durable agent memory (`memory/`) and registerable capability bundles (`skill/`). It is pure Go, no CGO (to preserve cross-compilation). It deliberately does not reimplement the agentcore harness, providers, tool dispatch, permission engine, or compaction.
 
-An architectural change is in progress (ADR 0001): encapsulating agentcore behind a jess domain facade, delivered in phases. New domain packages (`message/`, `tool/`, `event/`, and later `subagent/` and the root `jess` package) are being added, with agentcore confined to `internal/acl/`.
+Per ADR 0001, agentcore is encapsulated behind this facade: the domain packages (`message/`, `tool/`, `event/`, `model/`, `subagent/`, `memory/`, `skill/`, root `jess`) are vendor-free, and agentcore is confined to `internal/acl/` (the anti-corruption layer), enforced by a boundary test.
 
 ## Review this design context before reviewing code
 
@@ -19,7 +19,7 @@ Then review the code itself. Judge it against the ADR and plan: flag deviations 
 
 - Pure Go, no CGO. Reject anything that introduces CGO without explicit discussion.
 - Dependency licenses: MIT, Apache-2.0, MPL-2.0, or BSD only. No GPL or AGPL.
-- Anti-corruption-layer boundary: `github.com/voocel/agentcore` must be imported only by files under `internal/acl/`. The domain packages (`message`, `tool`, `event`, `model`, `subagent`, root `jess`) must stay vendor-free. Temporary exception until the Phase 4 migration: `memory/`, `skills/`, and `examples/` still import agentcore and are allowlisted in `internal/acl/boundary_test.go`; do not flag those existing imports. Flag any agentcore import in a domain package or any new one outside the allowlist.
+- Anti-corruption-layer boundary: `github.com/voocel/agentcore` is imported only by files under `internal/acl/`. The domain packages (`message`, `tool`, `event`, `model`, `subagent`, `memory`, `skill`, root `jess`) are vendor-free. This is enforced by `TestAgentcoreImportBoundary` in `internal/acl/boundary_test.go`. Flag any agentcore import outside `internal/acl/`.
 - Memory failures must never block an LLM call: the context-manager path degrades to no-memory, never no-agent. Preserve this when reviewing the inject path.
 - Do not vendor or fork dependencies to add features; missing upstream capability is filed upstream with a local TODO referencing the issue.
 - Documentation density: every exported type and function has a godoc; non-trivial design decisions get a short paragraph on why, not just what.

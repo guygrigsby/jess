@@ -9,7 +9,14 @@ what the rules become at v1.
 
 ## Unreleased
 
+### Changed
+- **Breaking:** jess is now a facade over agentcore (`jess.New` -> `Agent`/`Session`/`Run`), not a library of parts. agentcore is an internal implementation detail, imported only under `internal/acl` (enforced by a boundary test). No agentcore type appears in jess's public API. (ADR 0001)
+- **Breaking:** package `skills` renamed to `skill`.
+- The memory `ContextManager` adapter moved from `memory` into `internal/acl`; hosts wire memory via `jess.WithMemory(store, recaller)` instead of constructing a `ContextManager`.
+- `memory.RememberTool` / `memory.RecallTool` now implement `jess/tool.Tool`.
+
 ### Added
+- Root `jess` package, `jess/message`, `jess/event`, `jess/tool`, `jess/model`, `jess/subagent` (bounded Pool), and the `internal/acl` anti-corruption layer.
 - `memory.Kind` typed string with canonical `KindUser`, `KindFeedback`,
   `KindProject`, `KindReference` constants.
 - `memory.KindPolicy` with `AlwaysInclude`, `MaxEntries`, `AgeWeight`.
@@ -21,9 +28,10 @@ what the rules become at v1.
 - `Entry.Key` for supersession: re-Append at the same `(AgentID, Key)`
   REPLACES the prior entry. Solves the "user changed their mind"
   contradiction-in-memory problem.
-- `memory.RememberTool` — `agentcore.Tool` the model calls to save
-  facts. Reads provenance from ctx via `memory.WithSource`.
-- `ContextManager` now produces a layered prompt: Core (AlwaysInclude
+- `memory.RememberTool` / `memory.RecallTool` — `jess/tool.Tool`s the
+  model calls to save and query facts. Read provenance from ctx via
+  `memory.WithSource`.
+- The memory inject path produces a layered prompt: Core (AlwaysInclude
   kinds, bypasses recall) above Relevant (recalled).
 - `memory/embed/gomlx` — in-process pure-Go embedder using GoMLX's
   simplego backend and `sentence-transformers/all-MiniLM-L6-v2`.
@@ -34,7 +42,7 @@ what the rules become at v1.
   (RRF over multiple Recallers; K=60).
 - `memory.NewSimpleRecaller`, `memory.NewInMemoryStore`,
   `memory.NewJSONLStore` (with `Compact()` to drop tombstones).
-- `skills` package: `Skill`, `Set`, `Loader`, filesystem loader
+- `skill` package: `Skill`, `Set`, `Loader`, filesystem loader
   reading SKILL.md frontmatter (Claude Code skill layout).
 
 ### Changed

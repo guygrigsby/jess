@@ -1,5 +1,6 @@
-// Package skills adds registerable capability bundles on top of
-// agentcore.
+// Package skill provides registerable capability bundles for jess
+// agents, wired via jess.WithSkills and vendor-free (no agentcore
+// types in its API).
 //
 // A Skill is a unit of behavior an agent can opt into: a name and
 // description (the agent sees both in its system prompt), a
