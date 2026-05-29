@@ -1,124 +1,84 @@
-// quickstart shows the minimal end-to-end wiring of jess memory:
-// build an in-process embedder, attach a vector store, seed it with
-// a few memories, build a layered context-manager projection, and
-// print what the LLM would see as a system prompt prepended to a
-// fresh user message.
-//
-// What this DOESN'T do: actually call an LLM. The point is to
-// demonstrate jess's memory pipeline standalone — the projected
-// messages are what you'd hand to agentcore.WithContextManager
-// in a real host.
-//
-// Run:
-//
-//	go run ./examples/quickstart
-//
-// Expect a ~90MB ONNX model download on first run (cached
-// at ~/.cache/huggingface afterward; subsequent runs are warm).
+// Command quickstart shows the jess facade end to end with no network access:
+// an in-memory store seeds a core memory, a local echo model reveals what the
+// agent received (including the injected memory), and the run is driven through
+// jess.New -> Agent.Prompt with its live event stream.
 package main
 
 import (
 	"context"
 	"fmt"
 	"log"
-	"os"
-	"path/filepath"
+	"strings"
 
-	"github.com/voocel/agentcore"
-
+	"github.com/guygrigsby/jess"
+	"github.com/guygrigsby/jess/event"
 	"github.com/guygrigsby/jess/memory"
-	"github.com/guygrigsby/jess/memory/embed/gomlx"
+	"github.com/guygrigsby/jess/message"
+	"github.com/guygrigsby/jess/model"
 )
 
 func main() {
 	ctx := context.Background()
 
-	// 1. Pure-Go embedder. Downloads sentence-transformers/all-MiniLM-L6-v2
-	//    on first call; cached after. Zero CGO, zero subprocess.
-	fmt.Println("loading embedder (downloads ~90MB on first run)...")
-	emb, err := gomlx.NewEmbedder(gomlx.Options{})
-	if err != nil {
-		log.Fatalf("embedder: %v", err)
+	// 1. Durable memory. InMemoryStore keeps the quickstart offline and fast;
+	//    swap in JSONLStore or ChromemStore (+ memory/embed/gomlx) for
+	//    persistence or vector recall.
+	store := memory.NewInMemoryStore()
+	if _, err := store.Append(ctx, memory.Entry{
+		AgentID: "demo",
+		Kind:    string(memory.KindUser), // user Kind is AlwaysInclude: injected every turn
+		Text:    "User prefers concise, example-first answers.",
+	}); err != nil {
+		log.Fatalf("seed memory: %v", err)
 	}
 
-	// 2. Vector store backed by chromem-go, persisted to gob on disk.
-	dir, _ := os.UserCacheDir()
-	storePath := filepath.Join(dir, "jess-quickstart")
-	store, err := memory.NewChromemStore(emb, memory.ChromemOptions{
-		Path: storePath,
+	// 2. A local model. model.Once adapts a one-shot function into the
+	//    streaming model.Model; here it echoes what the agent received, so the
+	//    injected memory is visible in the reply.
+	echo := model.Once(false, func(_ context.Context, msgs []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+		var b strings.Builder
+		for _, m := range msgs {
+			fmt.Fprintf(&b, "[%s] %s\n", m.Role, m.Text())
+		}
+		return &model.Response{Message: message.Message{
+			Role:    message.RoleAssistant,
+			Content: []message.ContentBlock{{Kind: message.BlockText, Text: b.String()}},
+		}}, nil
 	})
+
+	// 3. Wire it all behind the facade.
+	agent, err := jess.New(
+		jess.WithModel(echo),
+		jess.WithAgentID("demo"),
+		jess.WithMemory(store, memory.NewSimpleRecaller()),
+	)
 	if err != nil {
-		log.Fatalf("store: %v", err)
+		log.Fatalf("jess.New: %v", err)
 	}
 
-	// 3. Seed with a few memories of different Kinds. KindUser and
-	//    KindFeedback always surface; KindProject only on relevance.
-	seed := []memory.Entry{
-		{Kind: string(memory.KindUser), AgentID: "main", Text: "user is a senior Go engineer"},
-		{Kind: string(memory.KindFeedback), AgentID: "main", Text: "prefer terse responses with concrete examples"},
-		{Kind: string(memory.KindProject), AgentID: "main", Text: "current sprint: ship the new vector memory feature by Friday"},
-		{Kind: string(memory.KindProject), AgentID: "main", Text: "decision: use chromem-go pinned to main for now"},
-		{Kind: string(memory.KindReference), AgentID: "main", Text: "vector DB landscape comparison at shaharia.com/blog/choosing-embeddable-vector-database-go-application"},
+	// 4. Drive a run and observe its event stream.
+	run, err := agent.Prompt(ctx, "What kind of answers do I like?")
+	if err != nil {
+		log.Fatalf("Prompt: %v", err)
 	}
-	for _, e := range seed {
-		if _, err := store.Append(ctx, e); err != nil {
-			log.Fatalf("append: %v", err)
+	for ev := range run.Events() {
+		switch ev.Kind {
+		case event.KindToolStart:
+			fmt.Printf("-> tool %s\n", ev.Tool)
+		case event.KindError:
+			fmt.Printf("! error: %v\n", ev.Err)
 		}
 	}
 
-	// 4. Hybrid retrieval: vector + token-overlap, fused via RRF.
-	recaller := memory.NewHybridRecaller(
-		memory.NewVectorRecaller(),
-		memory.NewSimpleRecaller(),
-	)
-
-	// 5. ContextManager projects core + relevant memories into the
-	//    prompt view on each LLM call.
-	cm := memory.NewContextManager(store, recaller, memory.ContextManagerOptions{
-		AgentID: "main",
-	})
-
-	// 6. Simulate a user turn. Project the prompt view the model
-	//    would see and print the memory message verbatim.
-	userMsg := agentcore.Message{
-		Role: agentcore.Role("user"),
-		Content: []agentcore.ContentBlock{
-			agentcore.TextBlock("What's the status of the vector memory work?"),
-		},
-	}
-	proj, err := cm.Project(ctx, []agentcore.AgentMessage{userMsg})
+	// 5. Final result. The echoed assistant text contains the injected core
+	//    memory, proving memory reached the model through the facade.
+	res, err := run.Wait()
 	if err != nil {
-		log.Fatalf("project: %v", err)
+		log.Fatalf("run: %v", err)
 	}
-
-	fmt.Println("=== projected prompt view ===")
-	for i, msg := range proj.Messages {
-		fmt.Printf("\n[message %d, role=%s]\n%s\n", i, msg.GetRole(), msg.TextContent())
+	for _, m := range res.Messages {
+		if m.Role == message.RoleAssistant {
+			fmt.Println("\nassistant saw:\n" + m.Text())
+		}
 	}
-
-	// 7. Demo: save a new memory via the RememberTool (what the model
-	//    would do at runtime). Then project again to show it surfaced.
-	tool := memory.NewRememberTool(store, memory.RememberOptions{AgentID: "main"})
-	if _, err := tool.Execute(
-		memory.WithSource(ctx, memory.Source{
-			SessionID: "quickstart",
-			MessageID: "demo-msg-1",
-		}),
-		[]byte(`{"kind":"project","text":"benchmark: gomlx embedder ~50ms per call on M-series CPU","reason":"performance result worth keeping"}`),
-	); err != nil {
-		log.Fatalf("remember: %v", err)
-	}
-
-	proj2, _ := cm.Project(ctx, []agentcore.AgentMessage{
-		agentcore.Message{
-			Role: agentcore.Role("user"),
-			Content: []agentcore.ContentBlock{
-				agentcore.TextBlock("What benchmarks do we have?"),
-			},
-		},
-	})
-	fmt.Println("\n=== after saving a new memory + new query ===")
-	fmt.Println(proj2.Messages[0].TextContent())
-
-	fmt.Printf("\nstore persisted to %s\n", storePath)
 }
