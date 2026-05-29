@@ -204,4 +204,3 @@ func (r *SimpleRecaller) tokenize(s string) []string {
 	flush()
 	return out
 }
-
