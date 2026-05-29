@@ -295,6 +295,18 @@ func (rt *Runtime) FollowUp(msg message.Message) {
 	}
 }
 
+// SetHistory seeds the underlying agent with prior conversation messages before
+// any run, so a host can resume a conversation whose history lives in its own
+// store. Call before the first Prompt/Continue. Seeded history must NOT include
+// the configured system prompt (WithSystemPrompt is prepended by agentcore on
+// every call); it is conversation turns only.
+func (rt *Runtime) SetHistory(history []message.Message) error {
+	if len(history) == 0 {
+		return nil
+	}
+	return rt.agent.SetMessages(messagesToACAgent(history))
+}
+
 // Abort hard-cancels the current run (context cancellation). Queued steer and
 // follow-up messages are processed on continuation.
 func (rt *Runtime) Abort() { rt.agent.Abort() }

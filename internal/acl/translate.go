@@ -210,6 +210,19 @@ func deltaKindFromAC(d ac.DeltaKind) event.DeltaKind {
 	}
 }
 
+// messagesToACAgent translates jess messages to the []ac.AgentMessage shape
+// Agent.SetMessages expects. messagesToAC returns []ac.Message; since Go slices
+// are not covariant we copy each (ac.Message implements ac.AgentMessage) into
+// an interface slice.
+func messagesToACAgent(msgs []message.Message) []ac.AgentMessage {
+	acMsgs := messagesToAC(msgs)
+	out := make([]ac.AgentMessage, len(acMsgs))
+	for i := range acMsgs {
+		out[i] = acMsgs[i]
+	}
+	return out
+}
+
 func summaryFromAC(s *ac.RunSummary) *event.RunSummary {
 	if s == nil {
 		return nil
