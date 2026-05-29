@@ -1,4 +1,4 @@
-package skills
+package skill
 
 import (
 	"context"
@@ -53,12 +53,12 @@ func NewSet() *Set {
 // Remove first. Empty Name is rejected; nothing else is validated.
 func (s *Set) Add(skill Skill) error {
 	if skill.Name == "" {
-		return errors.New("skills: Skill.Name is required")
+		return errors.New("skill: Skill.Name is required")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, exists := s.skills[skill.Name]; exists {
-		return errors.New("skills: skill " + skill.Name + " already registered")
+		return errors.New("skill: skill " + skill.Name + " already registered")
 	}
 	s.skills[skill.Name] = skill
 	return nil

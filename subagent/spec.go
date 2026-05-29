@@ -9,7 +9,7 @@ import (
 	"github.com/guygrigsby/jess/internal/acl"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/model"
-	"github.com/guygrigsby/jess/skills"
+	"github.com/guygrigsby/jess/skill"
 	"github.com/guygrigsby/jess/tool"
 )
 
@@ -19,7 +19,7 @@ type Spec struct {
 	Name         string
 	Model        model.Model
 	Tools        []tool.Tool
-	Skills       *skills.Set
+	Skills       *skill.Set
 	SystemPrompt string
 	AgentID      string
 	MaxTurns     int

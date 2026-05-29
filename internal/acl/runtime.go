@@ -12,7 +12,7 @@ import (
 	"github.com/guygrigsby/jess/memory"
 	"github.com/guygrigsby/jess/message"
 	"github.com/guygrigsby/jess/model"
-	"github.com/guygrigsby/jess/skills"
+	"github.com/guygrigsby/jess/skill"
 	"github.com/guygrigsby/jess/tool"
 )
 
@@ -30,7 +30,7 @@ const streamBuffer = 128
 type Config struct {
 	Model        model.Model     // required
 	Tools        []tool.Tool     // standalone jess tools
-	Skills       *skills.Set     // optional; contributes SystemBlocks + Tools
+	Skills       *skill.Set      // optional; contributes SystemBlocks + Tools
 	SystemPrompt string          // optional base system prompt
 	Store        memory.Store    // optional; with Recaller, wires the memory ContextManager
 	Recaller     memory.Recaller // optional

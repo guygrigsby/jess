@@ -3,7 +3,7 @@ package jess
 import (
 	"github.com/guygrigsby/jess/memory"
 	"github.com/guygrigsby/jess/model"
-	"github.com/guygrigsby/jess/skills"
+	"github.com/guygrigsby/jess/skill"
 	"github.com/guygrigsby/jess/tool"
 )
 
@@ -16,7 +16,7 @@ type Option func(*options)
 type options struct {
 	model        model.Model
 	tools        []tool.Tool
-	skills       *skills.Set
+	skills       *skill.Set
 	systemPrompt string
 	store        memory.Store
 	recaller     memory.Recaller
@@ -40,7 +40,7 @@ func WithTools(tools ...tool.Tool) Option {
 }
 
 // WithSkills registers a skill set, contributing system-prompt blocks and tools.
-func WithSkills(set *skills.Set) Option { return func(o *options) { o.skills = set } }
+func WithSkills(set *skill.Set) Option { return func(o *options) { o.skills = set } }
 
 // WithMemory wires durable memory: recalled entries are injected each turn and
 // degrade to no-memory on error (never blocking the LLM call). Both store and

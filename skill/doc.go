@@ -41,4 +41,4 @@
 //
 // Status: skeleton — interfaces shipped, real loaders land in
 // follow-up commits.
-package skills
+package skill

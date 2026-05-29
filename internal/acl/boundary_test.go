@@ -19,7 +19,7 @@ import (
 // internal/acl.
 var preMigrationAgentcoreImporters = []string{
 	"memory/",
-	"skills/",
+	"skill/",
 	"examples/",
 }
 
