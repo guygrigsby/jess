@@ -125,11 +125,32 @@ func usageFromAC(u *ac.Usage) model.Usage {
 	return model.Usage{Input: u.Input, Output: u.Output, TotalTokens: u.TotalTokens}
 }
 
+// cappedChatModel wraps an ac.ChatModel to cap max output tokens per call.
+// agentcore's WithMaxTokens is a per-call option (not a construction option) and
+// the agent loop builds its own options, so capping must be applied on each
+// Generate/GenerateStream call here. max <= 0 should never reach this type
+// (NewLiteLLMModel only wraps when max > 0).
+type cappedChatModel struct {
+	cm  ac.ChatModel
+	max int
+}
+
+func (c cappedChatModel) SupportsTools() bool { return c.cm.SupportsTools() }
+
+func (c cappedChatModel) Generate(ctx context.Context, msgs []ac.Message, tools []ac.ToolSpec, opts ...ac.CallOption) (*ac.LLMResponse, error) {
+	return c.cm.Generate(ctx, msgs, tools, append(opts, ac.WithMaxTokens(c.max))...)
+}
+
+func (c cappedChatModel) GenerateStream(ctx context.Context, msgs []ac.Message, tools []ac.ToolSpec, opts ...ac.CallOption) (<-chan ac.StreamEvent, error) {
+	return c.cm.GenerateStream(ctx, msgs, tools, append(opts, ac.WithMaxTokens(c.max))...)
+}
+
 // LiteLLMConfig configures a litellm-backed model. Plain fields (no agentcore
 // types) so the root jess package can build it without importing the harness.
 type LiteLLMConfig struct {
-	APIKey  string
-	BaseURL string
+	APIKey    string
+	BaseURL   string
+	MaxTokens int
 }
 
 // NewLiteLLMModel builds a litellm-backed cloud model from provider/modelID and
@@ -142,9 +163,13 @@ func NewLiteLLMModel(provider, modelID string, cfg LiteLLMConfig) (model.Model, 
 	if cfg.BaseURL != "" {
 		opts = append(opts, llm.WithBaseURL(cfg.BaseURL))
 	}
-	cm, err := llm.NewModel(provider, modelID, opts...)
+	raw, err := llm.NewModel(provider, modelID, opts...)
 	if err != nil {
 		return nil, err
+	}
+	var cm ac.ChatModel = raw
+	if cfg.MaxTokens > 0 {
+		cm = cappedChatModel{cm: cm, max: cfg.MaxTokens}
 	}
 	return newNativeModel(cm), nil
 }

@@ -34,3 +34,25 @@ func TestLiteLLM_OptionsThreadThrough(t *testing.T) {
 		t.Fatal("expected a non-nil model.Model")
 	}
 }
+
+// Negative MaxTokens silently disabled the cap (the ACL wraps only when
+// MaxTokens > 0). Clamp to 0 so a caller bug surfaces as the documented
+// no-cap default, not as a confusing silent no-op.
+func TestWithLLMMaxTokens_ClampsNegatives(t *testing.T) {
+	cases := []struct {
+		in, want int
+	}{
+		{-1, 0},
+		{-99, 0},
+		{0, 0},
+		{1, 1},
+		{4096, 4096},
+	}
+	for _, c := range cases {
+		var cfg LiteLLMConfig
+		WithLLMMaxTokens(c.in)(&cfg)
+		if cfg.MaxTokens != c.want {
+			t.Errorf("WithLLMMaxTokens(%d) -> MaxTokens=%d, want %d", c.in, cfg.MaxTokens, c.want)
+		}
+	}
+}

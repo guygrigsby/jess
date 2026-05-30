@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/guygrigsby/jess/internal/acl"
+	"github.com/guygrigsby/jess/message"
 )
 
 // Agent is the aggregate the host configures once: identity and capabilities
@@ -62,6 +63,21 @@ func (a *Agent) Prompt(ctx context.Context, input string) (*Run, error) {
 		return nil, err
 	}
 	return s.Prompt(ctx, input)
+}
+
+// NewSessionWithHistory opens a Session pre-loaded with prior conversation
+// messages, for resuming a conversation whose history is stored by the host
+// (e.g. replay after a restart). history is conversation turns only; the system
+// prompt is configured via WithSystemPrompt and must not be duplicated here.
+func (a *Agent) NewSessionWithHistory(history []message.Message) (*Session, error) {
+	s, err := a.newSession()
+	if err != nil {
+		return nil, err
+	}
+	if err := s.rt.SetHistory(history); err != nil {
+		return nil, err
+	}
+	return s, nil
 }
 
 // Continue resumes the Agent's default Session.

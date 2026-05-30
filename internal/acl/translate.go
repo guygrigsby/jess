@@ -187,7 +187,7 @@ func EventFromAC(e ac.Event) (event.Event, bool) {
 	case ac.EventTurnEnd:
 		return event.Event{Kind: event.KindTurnEnd}, true
 	case ac.EventAgentEnd:
-		return event.Event{Kind: event.KindRunEnd, Summary: summaryFromAC(e.Summary)}, true
+		return event.Event{Kind: event.KindRunEnd, Summary: runSummaryFromAC(e)}, true
 	case ac.EventError:
 		return event.Event{Kind: event.KindError, Err: e.Err}, true
 	default:
@@ -210,9 +210,34 @@ func deltaKindFromAC(d ac.DeltaKind) event.DeltaKind {
 	}
 }
 
+// messagesToACAgent translates jess messages to the []ac.AgentMessage shape
+// Agent.SetMessages expects. messagesToAC returns []ac.Message; since Go slices
+// are not covariant we copy each (ac.Message implements ac.AgentMessage) into
+// an interface slice.
+func messagesToACAgent(msgs []message.Message) []ac.AgentMessage {
+	acMsgs := messagesToAC(msgs)
+	out := make([]ac.AgentMessage, len(acMsgs))
+	for i := range acMsgs {
+		out[i] = acMsgs[i]
+	}
+	return out
+}
+
 func summaryFromAC(s *ac.RunSummary) *event.RunSummary {
 	if s == nil {
 		return nil
 	}
 	return &event.RunSummary{Turns: s.TurnCount, ToolCalls: s.ToolCalls, EndReason: string(s.EndReason)}
+}
+
+// runSummaryFromAC builds the run summary for an EventAgentEnd, including the
+// per-run token usage aggregated from the run's new messages. Used by BOTH the
+// run_end event (EventFromAC) and the Wait() result (captureEnd), so the
+// streamed summary and the returned summary always agree.
+func runSummaryFromAC(e ac.Event) *event.RunSummary {
+	s := summaryFromAC(e.Summary)
+	if s != nil {
+		s.Usage = usageFromACMessages(e.NewMessages)
+	}
+	return s
 }

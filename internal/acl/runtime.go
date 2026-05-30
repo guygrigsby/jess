@@ -88,6 +88,7 @@ type Runtime struct {
 	mu        sync.Mutex
 	running   bool
 	curStream atomic.Pointer[event.Stream]
+	curSource atomic.Pointer[memory.Source]
 }
 
 // NewRuntime builds a Runtime from cfg.
@@ -101,12 +102,17 @@ func NewRuntime(cfg Config) (*Runtime, error) {
 	return rt, nil
 }
 
-// injectStream adds the current run's stream to ctx when a run is active. It
-// is called on every tool Execute so the tool can forward events into the
-// parent run.
+// injectStream adds the current run's stream and memory provenance to ctx when
+// a run is active. It is called on every tool Execute so the tool can forward
+// events into the parent run and stamp written entries with the run's Source.
+// agentcore's incoming ctx (progressCtx with cancellation) is always the base;
+// we only append values, never substitute a different root context.
 func (rt *Runtime) injectStream(ctx context.Context) context.Context {
 	if s := rt.curStream.Load(); s != nil {
-		return event.ContextWithStream(ctx, s)
+		ctx = event.ContextWithStream(ctx, s)
+	}
+	if src := rt.curSource.Load(); src != nil {
+		ctx = memory.WithSource(ctx, *src)
 	}
 	return ctx
 }
@@ -160,10 +166,28 @@ func (r *Run) captureEnd(ev ac.Event) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.messages = messagesFromACAgent(ev.NewMessages)
-	r.summary = summaryFromAC(ev.Summary)
+	r.summary = runSummaryFromAC(ev)
 	if r.err == nil {
 		r.err = ev.Err
 	}
+}
+
+// usageFromACMessages sums token usage over a run's messages. agentcore reports
+// usage per assistant message, so the run total is their sum. This is the
+// PER-RUN total — deliberately NOT Agent.TotalUsage(), which is cumulative
+// across the whole session and would leak earlier turns into a later result.
+func usageFromACMessages(msgs []ac.AgentMessage) event.Usage {
+	var u event.Usage
+	for _, m := range msgs {
+		acm, ok := m.(ac.Message)
+		if !ok || acm.Usage == nil {
+			continue
+		}
+		u.Input += acm.Usage.Input
+		u.Output += acm.Usage.Output
+		u.Total += acm.Usage.TotalTokens
+	}
+	return u
 }
 
 // captureErr records the first run error (from an EventError) so Wait reflects
@@ -195,6 +219,9 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 	}
 	run := newRun()
 	rt.curStream.Store(run.stream)
+	if src := memory.SourceFromContext(ctx); src != (memory.Source{}) {
+		rt.curSource.Store(&src)
+	}
 
 	var unsub func()
 	unsub = rt.agent.Subscribe(func(ev ac.Event) {
@@ -212,10 +239,16 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 		if ev.Type == ac.EventAgentEnd {
 			run.stream.Close()
 			unsub()
+			// Clear per-run state UNDER rt.mu, BEFORE releasing it, so a
+			// concurrent Prompt/Continue that observes running==false sees a
+			// clean slate. Doing the Stores after Unlock allowed a new run to
+			// install its own curStream/curSource between the unlock and the
+			// nil-stores, and have them clobbered by this cleanup.
 			rt.mu.Lock()
+			rt.curStream.Store(nil)
+			rt.curSource.Store(nil)
 			rt.running = false
 			rt.mu.Unlock()
-			rt.curStream.Store(nil)
 			close(run.done)
 		}
 	})
@@ -223,6 +256,7 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 	if err := startFn(); err != nil {
 		unsub()
 		rt.curStream.Store(nil)
+		rt.curSource.Store(nil)
 		run.stream.Close()
 		close(run.done)
 		if errors.Is(err, ac.ErrAlreadyRunning) {
@@ -272,6 +306,27 @@ func (rt *Runtime) FollowUp(msg message.Message) {
 	for _, m := range messagesToAC([]message.Message{msg}) {
 		rt.agent.FollowUp(m)
 	}
+}
+
+// SetHistory seeds the underlying agent with prior conversation messages before
+// any run, so a host can resume a conversation whose history lives in its own
+// store. Call before the first Prompt/Continue. Seeded history must NOT include
+// the configured system prompt (WithSystemPrompt is prepended by agentcore on
+// every call); it is conversation turns only.
+func (rt *Runtime) SetHistory(history []message.Message) error {
+	if len(history) == 0 {
+		return nil
+	}
+	// SetHistory mutates the underlying agent's message list. It must not race
+	// with a Prompt/Continue (the Runtime guarantees one run at a time and the
+	// underlying message list is not concurrency-safe). Take rt.mu and refuse
+	// to seed mid-run.
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.running {
+		return ErrRunInProgress
+	}
+	return rt.agent.SetMessages(messagesToACAgent(history))
 }
 
 // Abort hard-cancels the current run (context cancellation). Queued steer and
