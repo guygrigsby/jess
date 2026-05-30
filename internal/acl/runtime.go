@@ -239,11 +239,16 @@ func (rt *Runtime) start(ctx context.Context, startFn func() error) (*Run, error
 		if ev.Type == ac.EventAgentEnd {
 			run.stream.Close()
 			unsub()
+			// Clear per-run state UNDER rt.mu, BEFORE releasing it, so a
+			// concurrent Prompt/Continue that observes running==false sees a
+			// clean slate. Doing the Stores after Unlock allowed a new run to
+			// install its own curStream/curSource between the unlock and the
+			// nil-stores, and have them clobbered by this cleanup.
 			rt.mu.Lock()
-			rt.running = false
-			rt.mu.Unlock()
 			rt.curStream.Store(nil)
 			rt.curSource.Store(nil)
+			rt.running = false
+			rt.mu.Unlock()
 			close(run.done)
 		}
 	})
