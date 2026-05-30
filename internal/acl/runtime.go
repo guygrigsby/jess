@@ -317,6 +317,15 @@ func (rt *Runtime) SetHistory(history []message.Message) error {
 	if len(history) == 0 {
 		return nil
 	}
+	// SetHistory mutates the underlying agent's message list. It must not race
+	// with a Prompt/Continue (the Runtime guarantees one run at a time and the
+	// underlying message list is not concurrency-safe). Take rt.mu and refuse
+	// to seed mid-run.
+	rt.mu.Lock()
+	defer rt.mu.Unlock()
+	if rt.running {
+		return ErrRunInProgress
+	}
 	return rt.agent.SetMessages(messagesToACAgent(history))
 }
 

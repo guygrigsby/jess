@@ -29,9 +29,16 @@ func WithLLMBaseURL(url string) LiteLLMOption {
 }
 
 // WithLLMMaxTokens caps the model's max output tokens per call (0 = provider
-// default). Prevents over-long generations and provider 400s.
+// default). Prevents over-long generations and provider 400s. Negative values
+// are clamped to 0 (the cap is otherwise applied only when MaxTokens > 0, so a
+// negative would silently no-op — likely a caller bug).
 func WithLLMMaxTokens(n int) LiteLLMOption {
-	return func(c *LiteLLMConfig) { c.MaxTokens = n }
+	return func(c *LiteLLMConfig) {
+		if n < 0 {
+			n = 0
+		}
+		c.MaxTokens = n
+	}
 }
 
 // LiteLLM builds a cloud model backed by agentcore's litellm adapter and returns

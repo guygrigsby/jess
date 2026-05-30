@@ -298,3 +298,48 @@ func TestRuntime_InjectsStreamIntoSkillTool(t *testing.T) {
 		t.Fatal("skill tool was never executed")
 	}
 }
+
+// SetHistory must refuse while a run is in flight: it mutates the underlying
+// agent's message list, which is not concurrency-safe with the active loop.
+// Returns ErrRunInProgress and leaves the run untouched.
+func TestRuntime_SetHistory_RefusesMidRun(t *testing.T) {
+	release := make(chan struct{})
+	started := make(chan struct{}, 1)
+	m := streamFn(func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (model.Chunk, error) {
+		select {
+		case started <- struct{}{}:
+		default:
+		}
+		<-release
+		return model.Chunk{Done: true, StopReason: "stop", Message: message.Message{
+			Role: message.RoleAssistant, Content: []message.ContentBlock{{Kind: message.BlockText, Text: "ok"}},
+		}}, nil
+	})
+	rt, err := NewRuntime(Config{Model: m})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	run, err := rt.Prompt(context.Background(), "go")
+	if err != nil {
+		t.Fatalf("Prompt: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(2 * time.Second):
+		t.Fatal("model never started")
+	}
+
+	hist := []message.Message{{Role: message.RoleUser, Content: []message.ContentBlock{{Kind: message.BlockText, Text: "earlier"}}}}
+	if err := rt.SetHistory(hist); !errors.Is(err, ErrRunInProgress) {
+		t.Fatalf("SetHistory during run = %v, want ErrRunInProgress", err)
+	}
+
+	close(release)
+	_, _ = run.Wait()
+
+	// After the run ends, SetHistory must succeed.
+	if err := rt.SetHistory(hist); err != nil {
+		t.Fatalf("SetHistory after run: %v", err)
+	}
+}
