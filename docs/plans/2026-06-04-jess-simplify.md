@@ -229,6 +229,15 @@ git commit -m "feat(audit): durable agentcore-free audit log (Event, Sink, JSONL
 
 **Context:** A gate is an `agentcore.ToolGate` (`func(ctx, GateRequest) (*GateDecision, error)`). `GateRequest` carries `Tool` (the instance), `Call` (name + args), `ToolLabel`, `Preview`. The default policy is fail-closed: a tool implementing `SafeTool` is allowed; everything else goes to the `Approver`; if no approver, deny. Every decision is recorded to the audit sink, including denials, before execution.
 
+**IMPORTANT — this is the first package outside `internal/acl` to import agentcore.** The ADR-0001 boundary test (`internal/acl/boundary_test.go`, `TestAgentcoreImportBoundary`) fails the moment that happens. This refactor deletes that boundary by design. So delete the boundary test FIRST (Step 0), then build `gate` importing agentcore directly. Do NOT make `gate` vendor-free or add an ACL adapter — exposing agentcore is the whole point. Do NOT wire the gate into the old facade (`options.go`/`agent.go`); that wiring happens in Task 7 against the new `jess.New`.
+
+- [ ] **Step 0: Delete the agentcore import boundary test**
+
+```bash
+git rm internal/acl/boundary_test.go
+git commit -m "chore: drop agentcore import boundary (ADR 0001 reversed; see ADR 0002)"
+```
+
 - [ ] **Step 1: Write the failing test**
 
 ```go
@@ -441,7 +450,7 @@ git commit -m "feat(gate): fail-closed tool gate with SafeTool marker and approv
 **Files:**
 - Rename dir: `internal/acl/` -> `internal/core/` (git mv each file)
 - Modify: every file's `package acl` -> `package core`
-- Delete: `internal/core/translate.go`, `internal/core/boundary_test.go`, `internal/core/translate_test.go`
+- Delete: `internal/core/translate.go`, `internal/core/translate_test.go` (the boundary test was already removed in Task 2 Step 0)
 - Keep (to be reshaped in later tasks): `context_manager.go`, `model.go`, `runtime.go`, `skills.go`, `provenance.go` and their tests
 
 **Context:** This is the package both root `jess` and `subagent` will import for agentcore wiring. We rename first, delete the pure type-translation (no longer needed once jess types are gone), and leave the rest to reshape. Expect the build to break until Task 7 finishes the flip; that is acceptable for Tasks 3-6 which build up `internal/core` before the root flip. Verify each of these tasks with `go build ./internal/core/` and `go test ./internal/core/` rather than the whole module.
@@ -463,7 +472,7 @@ grep -rl '^package acl' internal/core | xargs sed -i '' 's/^package acl/package 
 - [ ] **Step 3: Delete the type-translation layer**
 
 ```bash
-git rm internal/core/translate.go internal/core/translate_test.go internal/core/boundary_test.go
+git rm internal/core/translate.go internal/core/translate_test.go
 ```
 
 - [ ] **Step 4: Verify the remaining core package parses**
