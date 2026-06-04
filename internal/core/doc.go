@@ -14,4 +14,4 @@
 //     args as-is; malformed-args diagnostics are dropped).
 //   - ac content blocks: ContentImage and ContentToolRef (no jess equivalent).
 //   - ac.RunSummary: ToolErrors (event.RunSummary does not model it).
-package acl
+package core
