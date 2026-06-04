@@ -5,15 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
-
-	"github.com/guygrigsby/jess/event"
-	"github.com/guygrigsby/jess/message"
 )
 
-// Tool is the agentcore-free tool the model calls to delegate to a subagent.
-// It runs the named subagent on the Pool, forwards the subagent's events into
-// the caller's run stream (when one is in context), and returns the subagent's
-// final text output.
+// Tool is the agentcore.Tool the model calls to delegate to a subagent. It runs
+// the named subagent on the Pool and returns the subagent's final text output.
+// The subagent's events are merged onto the Pool's stream (AgentPath-tagged) for
+// any observer of the Pool.
 type Tool struct {
 	pool *Pool
 }
@@ -22,7 +19,7 @@ type Tool struct {
 // subagent Specs on the pool before use.
 func NewTool(pool *Pool) *Tool { return &Tool{pool: pool} }
 
-// Name satisfies jess/tool.Tool.
+// Name satisfies agentcore.Tool.
 func (t *Tool) Name() string { return "subagent" }
 
 // Description is what the model sees.
@@ -32,7 +29,7 @@ func (t *Tool) Description() string {
 		"returns its final output."
 }
 
-// Schema satisfies jess/tool.Tool.
+// Schema satisfies agentcore.Tool.
 func (t *Tool) Schema() map[string]any {
 	return map[string]any{
 		"type": "object",
@@ -49,9 +46,8 @@ type toolArgs struct {
 	Task  string `json:"task"`
 }
 
-// Execute runs the subagent and returns its output as JSON. If a run stream is
-// present in ctx (injected by the runtime), the subagent's events are forwarded
-// there, tagged by AgentPath.
+// Execute runs the subagent and returns its output as JSON. The subagent's
+// events flow onto the Pool's merged stream, tagged by AgentPath.
 func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (json.RawMessage, error) {
 	var args toolArgs
 	if err := json.Unmarshal(raw, &args); err != nil {
@@ -61,13 +57,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (json.RawMessag
 		return nil, fmt.Errorf("subagent: agent and task are required")
 	}
 
-	var task *Task
-	var err error
-	if sink, ok := event.StreamFromContext(ctx); ok {
-		task, err = t.pool.SubmitTo(ctx, sink, args.Agent, args.Task)
-	} else {
-		task, err = t.pool.Submit(ctx, args.Agent, args.Task)
-	}
+	task, err := t.pool.Submit(ctx, args.Agent, args.Task)
 	if err != nil {
 		return nil, fmt.Errorf("subagent: %w", err)
 	}
@@ -78,19 +68,7 @@ func (t *Tool) Execute(ctx context.Context, raw json.RawMessage) (json.RawMessag
 	}
 	body, _ := json.Marshal(map[string]any{
 		"agent":  args.Agent,
-		"output": lastText(res.Messages),
+		"output": res.Output,
 	})
 	return body, nil
-}
-
-// lastText returns the text of the final assistant message, if any.
-func lastText(msgs []message.Message) string {
-	for i := len(msgs) - 1; i >= 0; i-- {
-		if msgs[i].Role == message.RoleAssistant {
-			if s := msgs[i].Text(); s != "" {
-				return s
-			}
-		}
-	}
-	return ""
 }

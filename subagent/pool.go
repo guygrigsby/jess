@@ -9,8 +9,10 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/guygrigsby/jess/event"
-	"github.com/guygrigsby/jess/internal/acl"
+	ac "github.com/voocel/agentcore"
+
+	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/internal/core"
 )
 
 // Errors returned by Submit.
@@ -36,6 +38,7 @@ type Pool struct {
 	mu       sync.RWMutex
 	specs    map[string]Spec
 	maxDepth int
+	base     core.Config // parent defaults inherited by each Spec (model, gate, audit)
 
 	// sendMu guards sends to / closing of tasks. Submit holds it for reading
 	// across its channel send; Close holds it for writing while it closes the
@@ -48,7 +51,7 @@ type Pool struct {
 	closing chan struct{}
 
 	tasks  chan *job
-	stream *event.Stream
+	stream *Stream
 	g      *errgroup.Group
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -61,7 +64,7 @@ type job struct {
 	spec  Spec
 	input string
 	path  []string
-	sink  *event.Stream // nil => the pool's merged stream
+	sink  *Stream // nil => the pool's merged stream
 	task  *Task
 	ctx   context.Context // the Submit/SubmitTo ctx; aborts the running job when cancelled
 }
@@ -69,7 +72,10 @@ type job struct {
 // Option configures a Pool.
 type Option func(*poolConfig)
 
-type poolConfig struct{ maxConcurrent, maxQueued, maxDepth int }
+type poolConfig struct {
+	maxConcurrent, maxQueued, maxDepth int
+	base                               core.Config
+}
 
 // WithMaxConcurrent caps how many subagent runs execute at once (default 8).
 func WithMaxConcurrent(n int) Option { return func(c *poolConfig) { c.maxConcurrent = n } }
@@ -80,6 +86,15 @@ func WithMaxQueued(n int) Option { return func(c *poolConfig) { c.maxQueued = n 
 
 // WithMaxDepth caps subagent nesting depth (default 8).
 func WithMaxDepth(n int) Option { return func(c *poolConfig) { c.maxDepth = n } }
+
+// WithDefaults sets the parent defaults each Spec inherits when its
+// corresponding field is unset: the model, tool gate, audit sink, and agentID.
+// jess.New uses this so subagents share the parent agent's safety controls.
+func WithDefaults(model ac.ChatModel, gate ac.ToolGate, sink audit.Sink, agentID string) Option {
+	return func(c *poolConfig) {
+		c.base = core.Config{Model: model, Gate: gate, Audit: sink, AgentID: agentID}
+	}
+}
 
 // New creates a Pool and starts its workers.
 func New(opts ...Option) *Pool {
@@ -98,9 +113,10 @@ func New(opts ...Option) *Pool {
 	p := &Pool{
 		specs:    make(map[string]Spec),
 		maxDepth: cfg.maxDepth,
+		base:     cfg.base,
 		closing:  make(chan struct{}),
 		tasks:    make(chan *job, cfg.maxQueued),
-		stream:   event.NewStream(mergedStreamBuffer),
+		stream:   NewStream(mergedStreamBuffer),
 		g:        g,
 		ctx:      gctx,
 		cancel:   cancel,
@@ -138,16 +154,15 @@ func (p *Pool) Submit(ctx context.Context, name, input string, parentPath ...str
 // instead of the pool's merged stream. Used to bubble a subagent's events into
 // a parent run's stream. The sink is caller-owned; the pool never closes it.
 //
-// The sink must be actively consumed (the parent run's Events()/Wait drains
-// it). If the sink's buffer fills with no reader, the forwarding worker blocks
-// on Send, which stalls the task until the sink drains — when used from a tool
-// inside a parent run, that means the parent run must be consuming its stream.
-func (p *Pool) SubmitTo(ctx context.Context, sink *event.Stream, name, input string, parentPath ...string) (*Task, error) {
+// The sink must be actively consumed. If the sink's buffer fills with no reader,
+// the forwarding worker blocks on Send, which stalls the task until the sink
+// drains.
+func (p *Pool) SubmitTo(ctx context.Context, sink *Stream, name, input string, parentPath ...string) (*Task, error) {
 	return p.submit(ctx, sink, name, input, parentPath...)
 }
 
 // submit is the shared implementation for Submit and SubmitTo.
-func (p *Pool) submit(ctx context.Context, sink *event.Stream, name, input string, parentPath ...string) (*Task, error) {
+func (p *Pool) submit(ctx context.Context, sink *Stream, name, input string, parentPath ...string) (*Task, error) {
 	p.mu.RLock()
 	spec, ok := p.specs[name]
 	p.mu.RUnlock()
@@ -184,15 +199,12 @@ func (p *Pool) submit(ctx context.Context, sink *event.Stream, name, input strin
 	}
 }
 
-// runJob executes one job on a fresh runtime, forwards its events onto the
-// merged pool stream tagged with the job's AgentPath, and captures its result.
+// runJob executes one job as a fresh *agentcore.Agent, forwards its events onto
+// the destination stream tagged with the job's AgentPath, and captures its
+// result.
 func (p *Pool) runJob(j *job) {
 	defer close(j.task.done)
-	rt, err := acl.NewRuntime(j.spec.config())
-	if err != nil {
-		j.task.err = err
-		return
-	}
+
 	// Run under a context derived from BOTH the pool ctx (so pool teardown via
 	// Close/Cancel aborts the job) and the submit ctx (so cancelling
 	// Submit/SubmitTo's ctx aborts an already-running job — e.g. a parent run
@@ -210,35 +222,28 @@ func (p *Pool) runJob(j *job) {
 			}
 		}()
 	}
-	run, err := rt.Prompt(runCtx, j.input)
-	if err != nil {
-		j.task.err = err
-		return
-	}
+
+	agent := core.Agent(j.spec.config(p.base))
+	ch, wait := core.Stream(runCtx, agent, j.input)
+
 	// Forward this run's events onto the destination stream, tagged with the
-	// job's path (prepended so any nested path is preserved). Jobs submitted
-	// via SubmitTo use a caller-provided sink; others use the merged pool stream.
+	// job's path (prepended so any nested path is preserved). Jobs submitted via
+	// SubmitTo use a caller-provided sink; others use the merged pool stream.
 	dst := p.stream
 	if j.sink != nil {
 		dst = j.sink
 	}
-	for ev := range run.Events() {
-		ev.AgentPath = prependPath(j.path, ev.AgentPath)
-		dst.Send(ev)
+	var output string
+	for ev := range ch {
+		if ev.Type == ac.EventMessageEnd && ev.Message.GetRole() == ac.RoleAssistant {
+			if s := ev.Message.TextContent(); s != "" {
+				output = s
+			}
+		}
+		dst.Send(Event{Event: ev, AgentPath: append([]string(nil), j.path...)})
 	}
-	res, werr := run.Wait() // events already drained above; returns the captured result
-	j.task.res = Result{AgentPath: j.path, Messages: res.Messages, Summary: res.Summary}
-	j.task.err = werr
-}
-
-// prependPath returns base followed by existing (for nested subagent paths).
-// It always allocates a fresh slice so each tagged event owns its AgentPath —
-// a consumer mutating one event's path can't corrupt the task's other events.
-func prependPath(base, existing []string) []string {
-	out := make([]string, 0, len(base)+len(existing))
-	out = append(out, base...)
-	out = append(out, existing...)
-	return out
+	summary := wait()
+	j.task.res = Result{AgentPath: j.path, Output: output, Summary: summary}
 }
 
 // Close stops accepting new tasks. In-flight and queued tasks still run; the
@@ -276,4 +281,4 @@ func (p *Pool) Wait() error {
 // Events returns the merged, AgentPath-tagged event stream of all subagent
 // runs. It closes after Close and all tasks finish. Consume it, or call Wait
 // (which drains it); do not do both concurrently.
-func (p *Pool) Events() <-chan event.Event { return p.stream.Events() }
+func (p *Pool) Events() <-chan Event { return p.stream.Events() }

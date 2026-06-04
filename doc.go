@@ -1,31 +1,25 @@
-// Package jess is a memory- and skill-augmented agent facade over
-// github.com/voocel/agentcore. The host calls jess; jess owns the agent run.
+// Package jess is an easy agent harness over github.com/voocel/agentcore. It
+// adds durable memory, registerable skills, subagents, and two baked-in safety
+// controls: an append-only audit log and a fail-closed tool gate.
 //
-// Construct an Agent once with jess.New and functional options, then drive a
-// conversation:
+// jess.New is an option-assembler: pass functional options (WithModel,
+// WithMemory, WithSkills, WithTools, WithApprover, ...) and it returns a real
+// *agentcore.Agent. Drive it with agentcore's own API, or with jess.Stream,
+// which exposes the event channel and a Wait for the run summary and aborts the
+// run when its context is cancelled (the kill switch):
 //
-//	agent, _ := jess.New(
-//		jess.WithModel(m),                       // any model.Model (cloud via jess.LiteLLM, or local)
-//		jess.WithMemory(store, recaller),        // durable recall, injected each turn
-//		jess.WithSkills(set),                    // capability bundles
+//	agent := jess.New(
+//		jess.WithModel(m),                // any agentcore.ChatModel, or jess.Once for a local one
+//		jess.WithMemory(store, recaller), // durable recall, injected each turn
+//		jess.WithSkills(set),             // capability bundles
 //	)
-//	run, _ := agent.Prompt(ctx, "hello")
-//	for ev := range run.Events() { /* observe */ }
-//	res, _ := run.Wait()
+//	ch, wait := jess.Stream(ctx, agent, "hello")
+//	for ev := range ch { /* observe */ }
+//	summary := wait()
 //
-// The surface lives in subpackages:
-//   - jess/message — Message, ContentBlock, Role
-//   - jess/event   — Event, EventKind, Stream (the observable run stream)
-//   - jess/tool    — the Tool interface the model invokes
-//   - jess/model   — the vendor-free streaming Model interface
-//   - jess/memory  — Store/Recaller/Entry/Kind, the remember & recall tools
-//   - jess/skill   — Skill, Set, Loader (capability bundles)
-//   - jess/subagent — bounded Pool for fast, abundant subagents
-//
-// agentcore (the loop, providers, tool dispatch, permission engine, context
-// compaction) is an internal implementation detail: it is imported only under
-// internal/acl, enforced by a boundary test. No agentcore type appears in
-// jess's public API, so the harness is swappable.
+// agentcore types are exposed directly (ADR 0002); jess does not wrap the
+// harness. Portability insurance is keeping jess/memory and jess/skill
+// agentcore-free, so those stores and skills travel to any harness.
 //
 // Pre-1.0 — API may change before v1. See CHANGELOG.md and the examples/
 // directory for runnable wiring.

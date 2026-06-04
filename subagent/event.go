@@ -1,11 +1,27 @@
-package event
+package subagent
 
-import "sync"
+import (
+	"sync"
 
-// Stream multiplexes run Events from many producers (the anti-corruption
-// layer, and the subagent Pool's merger) onto a single consumer that ranges
-// over Events() (fan-in). Backpressure is by blocking send against the buffered
-// channel: a slow consumer slows producers, bounding memory.
+	ac "github.com/voocel/agentcore"
+)
+
+// Event is an agentcore lifecycle event tagged with the AgentPath of the
+// subagent that emitted it. The Pool merges events from many concurrent
+// subagent runs onto one stream; AgentPath is how a consumer tells them apart
+// (e.g. {"research/0001"}, or {"root/0001", "web/0002"} for a nested run).
+//
+// agentcore.Event has no notion of a subagent path, so jess carries it
+// alongside rather than inside the agentcore type.
+type Event struct {
+	ac.Event
+	AgentPath []string
+}
+
+// Stream multiplexes Events from many producers (the Pool's per-job mergers)
+// onto a single consumer that ranges over Events() (fan-in). Backpressure is by
+// blocking send against the buffered channel: a slow consumer slows producers,
+// bounding memory.
 //
 // Send after Close is a no-op (never a panic), so a producer that outlives the
 // run is harmless. Close is idempotent and unblocks any producer currently
@@ -33,10 +49,6 @@ func (s *Stream) Events() <-chan Event { return s.ch }
 
 // Send delivers ev to the consumer. It blocks while the buffer is full, unless
 // the stream is closed (then it drops ev and returns).
-//
-// The read lock is held across the channel send so Close, which needs the write
-// lock, cannot close the channel mid-send. The select also watches done so a
-// Close concurrent with a blocked send unblocks it rather than deadlocking.
 func (s *Stream) Send(ev Event) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -50,9 +62,7 @@ func (s *Stream) Send(ev Event) {
 }
 
 // Close closes the stream. Idempotent. Subsequent Send calls are no-ops and the
-// Events channel is closed so consumers ranging over it terminate. Close
-// signals done first (no lock) to release any blocked Send, then takes the
-// write lock to close the channel safely.
+// Events channel is closed so consumers ranging over it terminate.
 func (s *Stream) Close() {
 	s.closeOnce.Do(func() {
 		close(s.done)

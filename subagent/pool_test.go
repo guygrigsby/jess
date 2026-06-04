@@ -8,16 +8,26 @@ import (
 	"testing"
 	"time"
 
-	"github.com/guygrigsby/jess/event"
-	"github.com/guygrigsby/jess/message"
-	"github.com/guygrigsby/jess/model"
+	ac "github.com/voocel/agentcore"
+
+	"github.com/guygrigsby/jess/internal/core"
 )
 
+// echo builds a subagent Spec whose model replies with a fixed text.
 func echo(name, text string) Spec {
-	m := model.Once(false, func(context.Context, []message.Message, []model.ToolSpec) (*model.Response, error) {
-		return &model.Response{Message: message.Message{Role: message.RoleAssistant, Content: []message.ContentBlock{{Kind: message.BlockText, Text: text}}}, StopReason: "stop"}, nil
+	m := core.Once(false, func(context.Context, []ac.Message, []ac.ToolSpec) (*ac.LLMResponse, error) {
+		return &ac.LLMResponse{Message: ac.Message{
+			Role:    ac.RoleAssistant,
+			Content: []ac.ContentBlock{ac.TextBlock(text)},
+		}}, nil
 	})
 	return Spec{Name: name, Model: m}
+}
+
+// assistantReply is a convenience for blocking models that return an empty
+// assistant message once released.
+func assistantReply() *ac.LLMResponse {
+	return &ac.LLMResponse{Message: ac.Message{Role: ac.RoleAssistant}}
 }
 
 func TestPool_RunsTasksAndReturnsResults(t *testing.T) {
@@ -37,11 +47,11 @@ func TestPool_RunsTasksAndReturnsResults(t *testing.T) {
 	}
 	ra, _ := ta.Wait()
 	rb, _ := tb.Wait()
-	if len(ra.Messages) == 0 || ra.Messages[len(ra.Messages)-1].Text() != "ra" {
-		t.Errorf("task a result = %+v", ra)
+	if ra.Output != "ra" {
+		t.Errorf("task a output = %q, want %q", ra.Output, "ra")
 	}
-	if rb.Messages[len(rb.Messages)-1].Text() != "rb" {
-		t.Errorf("task b result = %+v", rb)
+	if rb.Output != "rb" {
+		t.Errorf("task b output = %q, want %q", rb.Output, "rb")
 	}
 }
 
@@ -50,7 +60,7 @@ func TestPool_RunsTasksAndReturnsResults(t *testing.T) {
 // propagation into runJob the model blocks forever and Task.Wait hangs.
 func TestPool_SubmitCtxAbortsRunningJob(t *testing.T) {
 	started := make(chan struct{}, 1)
-	blocker := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+	blocker := core.Once(false, func(ctx context.Context, _ []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
 		select {
 		case started <- struct{}{}:
 		default:
@@ -88,7 +98,7 @@ func TestPool_RespectsMaxConcurrent(t *testing.T) {
 	const limit = 3
 	var inFlight, maxSeen atomic.Int64
 	release := make(chan struct{})
-	gate := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+	gate := core.Once(false, func(ctx context.Context, _ []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
 		n := inFlight.Add(1)
 		for {
 			old := maxSeen.Load()
@@ -98,7 +108,7 @@ func TestPool_RespectsMaxConcurrent(t *testing.T) {
 		}
 		<-release
 		inFlight.Add(-1)
-		return &model.Response{Message: message.Message{Role: message.RoleAssistant}, StopReason: "stop"}, nil
+		return assistantReply(), nil
 	})
 	p := New(WithMaxConcurrent(limit), WithMaxQueued(100))
 	p.Register(Spec{Name: "g", Model: gate})
@@ -125,17 +135,17 @@ func TestPool_MergesTaggedEvents(t *testing.T) {
 	task, _ := p.Submit(context.Background(), "a", "go")
 	p.Close()
 
-	var sawRunEndForTask bool
+	var sawEndForTask bool
 	for ev := range p.Events() {
 		if len(ev.AgentPath) == 0 {
 			t.Errorf("event missing AgentPath: %+v", ev)
 		}
-		if ev.Kind == event.KindRunEnd && ev.AgentPath[len(ev.AgentPath)-1] == task.AgentPath()[len(task.AgentPath())-1] {
-			sawRunEndForTask = true
+		if ev.Type == ac.EventAgentEnd && ev.AgentPath[len(ev.AgentPath)-1] == task.AgentPath()[len(task.AgentPath())-1] {
+			sawEndForTask = true
 		}
 	}
-	if !sawRunEndForTask {
-		t.Error("did not see a tagged run_end for the task")
+	if !sawEndForTask {
+		t.Error("did not see a tagged agent_end for the task")
 	}
 	if err := p.Wait(); err != nil {
 		t.Fatalf("Wait: %v", err)
@@ -161,12 +171,12 @@ func TestPool_MaxDepth(t *testing.T) {
 
 func TestPool_SubmitBlocksWhenQueueFullThenCtxCancels(t *testing.T) {
 	release := make(chan struct{})
-	block := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+	block := core.Once(false, func(ctx context.Context, _ []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
 		select {
 		case <-release:
 		case <-ctx.Done():
 		}
-		return &model.Response{Message: message.Message{Role: message.RoleAssistant}, StopReason: "stop"}, nil
+		return assistantReply(), nil
 	})
 	p := New(WithMaxConcurrent(1), WithMaxQueued(1))
 	p.Register(Spec{Name: "b", Model: block})
@@ -186,7 +196,7 @@ func TestPool_SubmitBlocksWhenQueueFullThenCtxCancels(t *testing.T) {
 
 func TestPool_CancelAbortsInFlight(t *testing.T) {
 	started := make(chan struct{})
-	block := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+	block := core.Once(false, func(ctx context.Context, _ []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
 		close(started)
 		<-ctx.Done()
 		return nil, ctx.Err()
@@ -229,7 +239,7 @@ func TestPool_ConcurrentSubmitAndCloseNoPanic(t *testing.T) {
 func TestPool_SubmitToForwardsToSink(t *testing.T) {
 	p := New(WithMaxConcurrent(2))
 	p.Register(echo("a", "ra"))
-	sink := event.NewStream(64)
+	sink := NewStream(64)
 
 	task, err := p.SubmitTo(context.Background(), sink, "a", "go")
 	if err != nil {
@@ -263,12 +273,12 @@ func TestPool_SubmitToForwardsToSink(t *testing.T) {
 // Close must not hang behind a Submit blocked on a full queue.
 func TestPool_CloseUnblocksBlockedSubmit(t *testing.T) {
 	release := make(chan struct{})
-	block := model.Once(false, func(ctx context.Context, _ []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+	block := core.Once(false, func(ctx context.Context, _ []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
 		select {
 		case <-release:
 		case <-ctx.Done():
 		}
-		return &model.Response{Message: message.Message{Role: message.RoleAssistant}, StopReason: "stop"}, nil
+		return assistantReply(), nil
 	})
 	p := New(WithMaxConcurrent(1), WithMaxQueued(1))
 	p.Register(Spec{Name: "b", Model: block})

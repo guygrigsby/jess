@@ -1,7 +1,7 @@
-// Command quickstart shows the jess facade end to end with no network access:
-// an in-memory store seeds a core memory, a local echo model reveals what the
-// agent received (including the injected memory), and the run is driven through
-// jess.New -> Agent.Prompt with its live event stream.
+// Command quickstart shows jess end to end with no network access: an in-memory
+// store seeds a core memory, a local echo model reveals what the agent received
+// (including the injected memory), and the run is driven through jess.New ->
+// jess.Stream with its live event channel.
 package main
 
 import (
@@ -10,11 +10,11 @@ import (
 	"log"
 	"strings"
 
+	ac "github.com/voocel/agentcore"
+
 	"github.com/guygrigsby/jess"
-	"github.com/guygrigsby/jess/event"
+	"github.com/guygrigsby/jess/audit"
 	"github.com/guygrigsby/jess/memory"
-	"github.com/guygrigsby/jess/message"
-	"github.com/guygrigsby/jess/model"
 )
 
 func main() {
@@ -32,56 +32,42 @@ func main() {
 		log.Fatalf("seed memory: %v", err)
 	}
 
-	// 2. A local model. model.Once adapts a one-shot function into the
-	//    streaming model.Model; here it echoes what the agent received, so the
+	// 2. A local model. jess.Once adapts a one-shot function into an
+	//    agentcore.ChatModel; here it echoes what the agent received, so the
 	//    injected memory is visible in the reply.
-	echo := model.Once(false, func(_ context.Context, msgs []message.Message, _ []model.ToolSpec) (*model.Response, error) {
+	echo := jess.Once(false, func(_ context.Context, msgs []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
 		var b strings.Builder
 		for _, m := range msgs {
-			fmt.Fprintf(&b, "[%s] %s\n", m.Role, m.Text())
+			fmt.Fprintf(&b, "[%s] %s\n", m.Role, m.TextContent())
 		}
-		return &model.Response{
-			Message: message.Message{
-				Role:    message.RoleAssistant,
-				Content: []message.ContentBlock{{Kind: message.BlockText, Text: b.String()}},
-			},
-			StopReason: "stop",
-		}, nil
+		return &ac.LLMResponse{Message: ac.Message{
+			Role:    ac.RoleAssistant,
+			Content: []ac.ContentBlock{ac.TextBlock(b.String())},
+		}}, nil
 	})
 
-	// 3. Wire it all behind the facade.
-	agent, err := jess.New(
+	// 3. Wire it all together. New returns a real *agentcore.Agent.
+	agent := jess.New(
 		jess.WithModel(echo),
 		jess.WithAgentID("demo"),
 		jess.WithMemory(store, memory.NewSimpleRecaller()),
+		jess.WithAudit(audit.DiscardSink{}), // quiet for the demo
 	)
-	if err != nil {
-		log.Fatalf("jess.New: %v", err)
-	}
 
-	// 4. Drive a run and observe its event stream.
-	run, err := agent.Prompt(ctx, "What kind of answers do I like?")
-	if err != nil {
-		log.Fatalf("Prompt: %v", err)
-	}
-	for ev := range run.Events() {
-		switch ev.Kind {
-		case event.KindToolStart:
+	// 4. Drive a run and observe its event channel.
+	ch, wait := jess.Stream(ctx, agent, "What kind of answers do I like?")
+	for ev := range ch {
+		switch ev.Type {
+		case ac.EventToolExecStart:
 			fmt.Printf("-> tool %s\n", ev.Tool)
-		case event.KindError:
+		case ac.EventError:
 			fmt.Printf("! error: %v\n", ev.Err)
 		}
 	}
 
-	// 5. Final result. The echoed assistant text contains the injected core
-	//    memory, proving memory reached the model through the facade.
-	res, err := run.Wait()
-	if err != nil {
-		log.Fatalf("run: %v", err)
+	// 5. The injected core memory reached the model; the run completed.
+	if sum := wait(); sum == nil {
+		log.Fatal("no summary")
 	}
-	for _, m := range res.Messages {
-		if m.Role == message.RoleAssistant {
-			fmt.Println("\nassistant saw:\n" + m.Text())
-		}
-	}
+	fmt.Println("ok: memory injected, run completed")
 }
