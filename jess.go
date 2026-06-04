@@ -15,8 +15,9 @@ type Option func(*core.Config, *newState)
 // newState holds option-time extras that need post-processing after all options
 // have run (the gate policy, the subagent pool).
 type newState struct {
-	approver gate.Approver
-	allowAll bool
+	subagentSpecs []any // resolved to []subagent.Spec by WithSubagents/attachSubagents
+	approver      gate.Approver
+	allowAll      bool
 }
 
 // New assembles a ready *agentcore.Agent: model, memory, skills, tools, gate,
@@ -43,6 +44,7 @@ func New(opts ...Option) *ac.Agent {
 			cfg.Gate = gate.New(gate.Policy{Approver: st.approver, Audit: cfg.Audit, AgentPath: cfg.AgentID})
 		}
 	}
+	attachSubagents(&cfg, st)
 	return core.Agent(cfg)
 }
 
