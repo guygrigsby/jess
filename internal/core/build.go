@@ -100,19 +100,16 @@ func Agent(cfg Config) *ac.Agent {
 		opts = append(opts, ac.WithTools(tools...))
 	}
 
-	// Compute the non-safe tool set from every registered tool. A tool is safe
-	// only when it implements gate.SafeTool AND Safe() reports true; everything
-	// else (including tools that don't implement the marker) is non-safe and so
-	// requires a durable KindAction before it can run (enforced in the audit
-	// middleware, gate-independently).
-	nonSafe := map[string]bool{}
+	// Compute the safe tool set from every registered tool. Only tools that
+	// explicitly implement gate.SafeTool AND return Safe()=true are allowed to
+	// bypass the durable-record requirement. Everything else (including tools
+	// that don't implement the marker, and any tool injected after this point via
+	// WithAgentcoreOptions) is treated as requiring a durable KindAction before
+	// it can run (fail-safe; unknown tools cannot run unaudited).
+	safe := map[string]bool{}
 	for _, tl := range tools {
-		safe := false
-		if st, ok := tl.(gate.SafeTool); ok {
-			safe = st.Safe()
-		}
-		if !safe {
-			nonSafe[tl.Name()] = true
+		if st, ok := tl.(gate.SafeTool); ok && st.Safe() {
+			safe[tl.Name()] = true
 		}
 	}
 
@@ -128,7 +125,7 @@ func Agent(cfg Config) *ac.Agent {
 	if cfg.Gate != nil {
 		opts = append(opts, ac.WithToolGate(cfg.Gate))
 	}
-	opts = append(opts, ac.WithMiddlewares(auditMiddleware(cfg.Audit, nonSafe, rs, cfg.AgentID)))
+	opts = append(opts, ac.WithMiddlewares(auditMiddleware(cfg.Audit, safe, rs, cfg.AgentID)))
 	if cfg.MaxTurns > 0 {
 		opts = append(opts, ac.WithMaxTurns(cfg.MaxTurns))
 	}

@@ -47,3 +47,11 @@ func (r *runState) request() (ledger.EventID, string) {
 	defer r.mu.RUnlock()
 	return r.requestID, r.requestText
 }
+
+// runContext returns the run id, request id, and request text under one lock,
+// so a concurrent end() cannot tear them apart.
+func (r *runState) runContext() (string, ledger.EventID, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.id, r.requestID, r.requestText
+}

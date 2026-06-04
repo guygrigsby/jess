@@ -16,23 +16,30 @@ import (
 //
 // agentcore runs this middleware for EVERY tool about to execute, regardless of
 // which gate (default, AllowAll, custom WithToolGate) allowed it. So this is the
-// unbypassable enforcement point: for a non-safe tool, the middleware commits one
-// durable, self-explaining KindAction BEFORE calling next. If the sink is not a
-// ledger.DurableSink, or CommitAction fails, it returns an error and next is
-// never called (the tool does not run). A permissive gate cannot bypass the
-// durable record because the record happens here, not in the gate.
+// unbypassable enforcement point: any tool not explicitly marked safe is treated
+// as requiring a durable action record (fail-safe; an unclassified or
+// externally-injected tool cannot run unaudited). For each such tool the
+// middleware commits one durable, self-explaining KindAction BEFORE calling next.
+// If the sink is not a ledger.DurableSink, or CommitAction fails, it returns an
+// error and next is never called (the tool does not run). A permissive gate
+// cannot bypass the durable record because the record happens here, not in the
+// gate.
 //
 // Safe tools (and the result leg of non-safe tools) get a best-effort
 // KindToolResult: those writes never block the run.
-func auditMiddleware(sink ledger.Sink, nonSafe map[string]bool, rs *runState, agentPath string) ac.ToolMiddleware {
+func auditMiddleware(sink ledger.Sink, safe map[string]bool, rs *runState, agentPath string) ac.ToolMiddleware {
 	return func(ctx context.Context, call ac.ToolCall, next ac.ToolExecuteFunc) (json.RawMessage, error) {
-		runID := rs.runID()
-		if nonSafe[call.Name] {
+		if !safe[call.Name] {
+			runID, reqID, reqText := rs.runContext()
+			if runID == "" {
+				// No active run: cannot produce a self-explaining record tied to a
+				// run, so fail closed rather than commit an untraced action.
+				return nil, fmt.Errorf("action %q denied: no active run (no record, no action)", call.Name)
+			}
 			durable, ok := sink.(ledger.DurableSink)
 			if !ok {
 				return nil, fmt.Errorf("ledger not durable; action %q denied (no record, no action)", call.Name)
 			}
-			reqID, reqText := rs.request()
 			action := ledger.Event{
 				EventID:   ledger.NewEventID(),
 				RunID:     runID,
@@ -50,6 +57,7 @@ func auditMiddleware(sink ledger.Sink, nonSafe map[string]bool, rs *runState, ag
 				return nil, fmt.Errorf("action %q denied: record not durable: %w", call.Name, err)
 			}
 		}
+		runID, _, _ := rs.runContext()
 		start := time.Now()
 		res, err := next(ctx, call.Args)
 		ev := ledger.Event{

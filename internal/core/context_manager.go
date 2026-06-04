@@ -236,11 +236,12 @@ func (m *ContextManager) recordRetrieved(core, relevant []memory.Entry) {
 		runID = m.rs.runID()
 	}
 	_ = m.audit.Record(ledger.Event{
-		EventID: ledger.NewEventID(),
-		RunID:   runID,
-		Time:    time.Now(),
-		Kind:    ledger.KindRetrieved,
-		Refs:    refs,
+		EventID:   ledger.NewEventID(),
+		RunID:     runID,
+		Time:      time.Now(),
+		AgentPath: m.agentID,
+		Kind:      ledger.KindRetrieved,
+		Refs:      refs,
 	})
 }
 

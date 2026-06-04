@@ -78,7 +78,13 @@ func New(p Policy) ac.ToolGate {
 		}
 		rec := func(v ledger.Verdict, reason string) {
 			if p.Audit != nil {
+				runID := ""
+				if p.RunID != nil {
+					runID = p.RunID()
+				}
 				_ = p.Audit.Record(ledger.Event{
+					EventID:   ledger.NewEventID(),
+					RunID:     runID,
 					AgentPath: p.AgentPath,
 					Kind:      ledger.KindGateDecision,
 					Tool:      gr.Call.Name,
