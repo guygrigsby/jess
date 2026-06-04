@@ -21,7 +21,8 @@
 - `ledger/*_test.go` — per-file tests.
 - `internal/core/runstate.go` — per-agent `runState`, the agent->runState registry, `CurrentRunID(agent)`.
 - `internal/core/build.go`, `audit_mw.go`, `context_manager.go`, `stream.go` — wiring changes.
-- `gate/gate.go` — gate commits `KindAction` via `DurableSink`.
+- `gate/gate.go` — human approval; records DENIED non-safe attempts as `KindAction(denied)`. Does NOT enforce durability (a custom gate would bypass it).
+- `internal/core/audit_mw.go` — the unbypassable enforcement point: durable `KindAction` commit-or-deny for non-safe tools before execution, plus `KindToolResult` outcomes.
 - `memory/resolver.go` — `EntryGetter` on the stores (drift resolution), memory stays agentcore-free.
 - `jess.go`, `audit_opts.go` (→ `ledger_opts.go`) — `WithLedger`, default SQLite ledger, wiring.
 
@@ -86,11 +87,20 @@ Expected: `go.mod` gains the require.
 func TestNewEventIDMonotonicAndParsable(t *testing.T) {
 	a := NewEventID()
 	b := NewEventID()
-	if a == b {
-		t.Fatal("two ids should differ")
+	if a.Compare(b) >= 0 {
+		t.Fatalf("ids must increase monotonically: %s !< %s", a, b)
 	}
-	if a.String() == "" || len(a.String()) != 26 {
+	if len(a.String()) != 26 {
 		t.Fatalf("ulid string should be 26 chars, got %q", a.String())
+	}
+	// 1000 in a tight loop must stay strictly increasing (same-ms stress).
+	prev := NewEventID()
+	for i := 0; i < 1000; i++ {
+		cur := NewEventID()
+		if cur.Compare(prev) <= 0 {
+			t.Fatalf("non-monotonic at %d: %s <= %s", i, cur, prev)
+		}
+		prev = cur
 	}
 }
 
@@ -112,14 +122,25 @@ Expected: FAIL (undefined `NewEventID`, `Ref`, `RefTool`, `RefMemory`).
 
 - [ ] **Step 4: Edit `ledger/event.go`**
 
-Add imports `"github.com/oklog/ulid/v2"` and `"crypto/rand"`. Add to the `Event` struct (keep existing fields): `EventID ulid.ULID`, `RunID string`, `CallID string`. Add the new kinds and ref types:
+Add imports `"github.com/oklog/ulid/v2"`, `"crypto/rand"`, `"sync"`, `"time"`. Add to the `Event` struct (keep existing fields): `EventID ulid.ULID`, `RunID string`, `CallID string`. Add the new kinds and ref types:
 
 ```go
 // EventID is a ULID: time-ordered, globally unique, the ledger primary key.
 type EventID = ulid.ULID
 
-// NewEventID mints a fresh time-ordered id.
-func NewEventID() ulid.ULID { return ulid.MustNew(ulid.Now(), rand.Reader) }
+// monotonic entropy so ids minted in the same millisecond still sort in
+// creation order. ulid.Monotonic is not goroutine-safe, so guard it.
+var (
+	entMu   sync.Mutex
+	entropy = ulid.Monotonic(rand.Reader, 0)
+)
+
+// NewEventID mints a fresh, monotonically increasing time-ordered id.
+func NewEventID() ulid.ULID {
+	entMu.Lock()
+	defer entMu.Unlock()
+	return ulid.MustNew(ulid.Timestamp(time.Now()), entropy)
+}
 
 const (
 	KindRequest    Kind = "request"     // chain head: the run input
@@ -463,6 +484,8 @@ package ledger
 import (
 	"database/sql"
 	"encoding/json"
+	"errors"
+	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -499,23 +522,46 @@ func OpenSQLite(path string) (*SQLite, error) {
 
 func (s *SQLite) Close() error { return s.db.Close() }
 
+// zeroID is the all-zero ULID, rejected as a primary key.
+var zeroID EventID
+
 func (s *SQLite) insert(e Event) error {
+	if e.EventID == zeroID {
+		return errors.New("ledger: zero EventID")
+	}
+	if e.Time.IsZero() {
+		e.Time = time.Now()
+	}
 	payload, err := json.Marshal(e)
 	if err != nil {
 		return err
 	}
+	// Plain INSERT: a duplicate id is an error, never a silent overwrite.
 	_, err = s.db.Exec(
-		`INSERT OR REPLACE INTO events(id,run_id,call_id,ts,kind,tool,payload) VALUES(?,?,?,?,?,?,?)`,
+		`INSERT INTO events(id,run_id,call_id,ts,kind,tool,payload) VALUES(?,?,?,?,?,?,?)`,
 		e.EventID.String(), e.RunID, e.CallID, e.Time.UnixNano(), string(e.Kind), e.Tool, payload)
 	return err
 }
 
-// Record is the best-effort write path.
+// Record is the best-effort write path (observation).
 func (s *SQLite) Record(e Event) error { return s.insert(e) }
 
-// CommitAction is the durable write path. A successful INSERT means the row is
-// persisted; the gate treats success as "safe to run the action".
-func (s *SQLite) CommitAction(e Event) error { return s.insert(e) }
+// CommitAction is the durable write path. It validates that the action is
+// self-explaining before persisting; a record that could only say "an action
+// happened" is rejected, so the gate/middleware deny rather than store junk.
+// A successful INSERT means the row is on disk.
+func (s *SQLite) CommitAction(e Event) error {
+	if e.Kind != KindAction {
+		return errors.New("ledger: CommitAction requires KindAction")
+	}
+	if e.RunID == "" || e.CallID == "" || e.Tool == "" || len(e.Args) == 0 {
+		return errors.New("ledger: action record not self-explaining (need RunID, CallID, Tool, Args)")
+	}
+	if len(e.Refs) == 0 {
+		return errors.New("ledger: action record has no embedded why (Refs empty)")
+	}
+	return s.insert(e)
+}
 
 // Get resolves one event by id.
 func (s *SQLite) Get(id EventID) (Event, error) {
@@ -530,7 +576,7 @@ func (s *SQLite) Get(id EventID) (Event, error) {
 
 // Chain reads one run's events (ordered by id == time) and assembles the triad.
 func (s *SQLite) Chain(runID string) (Chain, error) {
-	rows, err := s.db.Query(`SELECT payload FROM events WHERE run_id = ? ORDER BY id`, runID)
+	rows, err := s.db.Query(`SELECT payload FROM events WHERE run_id = ? ORDER BY ts, id`, runID)
 	if err != nil {
 		return Chain{}, err
 	}
@@ -680,17 +726,36 @@ git commit -m "feat(memory,core): EntryGetter + ledger Resolver adapter for ref 
 ```go
 package core
 
-import "testing"
+import (
+	"testing"
 
-func TestRunStateRoundTrip(t *testing.T) {
+	"github.com/guygrigsby/jess/ledger"
+)
+
+func TestRunStateBeginEnd(t *testing.T) {
 	rs := &runState{}
-	rs.set("run-abc")
+	reqID := ledger.NewEventID()
+	if err := rs.begin("run-abc", reqID, "restart nginx"); err != nil {
+		t.Fatalf("begin: %v", err)
+	}
 	if rs.runID() != "run-abc" {
 		t.Fatalf("got %q", rs.runID())
 	}
-	rs.clear()
+	if id, txt := rs.request(); id != reqID || txt != "restart nginx" {
+		t.Fatalf("request() = %s, %q", id, txt)
+	}
+	// a second begin while active must fail (one-active-run).
+	if err := rs.begin("run-xyz", ledger.NewEventID(), "x"); err != ErrRunActive {
+		t.Fatalf("concurrent begin should fail with ErrRunActive, got %v", err)
+	}
+	// a stale end from a different owner must not clear.
+	rs.end("not-owner")
+	if rs.runID() != "run-abc" {
+		t.Fatal("stale end wiped the active run")
+	}
+	rs.end("run-abc")
 	if rs.runID() != "" {
-		t.Fatal("clear should empty runID")
+		t.Fatal("owner end should clear runID")
 	}
 }
 ```
@@ -705,26 +770,70 @@ Expected: FAIL (undefined `runState`).
 ```go
 package core
 
-import "sync"
+import (
+	"errors"
+	"sync"
 
-// runState carries the current RunID for one agent. The gate, audit middleware,
-// and context manager capture a *runState at build time; jess.Stream sets it per
-// run. Safe because at most one run is active per agent (documented on Stream).
+	"github.com/guygrigsby/jess/ledger"
+)
+
+// ErrRunActive is returned by begin when a run is already in flight on this
+// agent. It enforces the one-active-run invariant instead of assuming it.
+var ErrRunActive = errors.New("core: a run is already active on this agent")
+
+// runState carries the current run's id plus the request id/text the gate and
+// middleware need to make an action self-explaining. The gate, audit middleware,
+// and context manager capture a *runState at build time; jess.Stream begins/ends
+// it per run.
 type runState struct {
-	mu sync.RWMutex
-	id string
+	mu          sync.RWMutex
+	id          string
+	requestID   ledger.EventID
+	requestText string
 }
 
-func (r *runState) set(id string) { r.mu.Lock(); r.id = id; r.mu.Unlock() }
-func (r *runState) clear()        { r.mu.Lock(); r.id = ""; r.mu.Unlock() }
+// begin starts a run, failing if one is already active (no silent overwrite of
+// a live run's id by a concurrent Stream).
+func (r *runState) begin(id string, reqID ledger.EventID, reqText string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.id != "" {
+		return ErrRunActive
+	}
+	r.id, r.requestID, r.requestText = id, reqID, reqText
+	return nil
+}
+
+// end clears the run only if id matches the owner, so a late end from a previous
+// run cannot wipe a newer one.
+func (r *runState) end(id string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.id == id {
+		r.id, r.requestText, r.requestID = "", "", ledger.EventID{}
+	}
+}
+
 func (r *runState) runID() string { r.mu.RLock(); defer r.mu.RUnlock(); return r.id }
+
+// request returns the current run's request id and text (the embedded why).
+func (r *runState) request() (ledger.EventID, string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.requestID, r.requestText
+}
 ```
 
 - [ ] **Step 4: Wire it in `build.go` and `stream.go`**
 
 In `build.go` `Agent(cfg)`: create `rs := &runState{}` before assembling options; pass `rs` into the audit middleware, the gate construction, and the context manager (each gains a `*runState` parameter — Tasks 8, 9 use it). Store `rs` in the agent registry alongside the sink (extend the existing registry value struct in `build.go` to include `rs`).
 
-In `stream.go` `Stream`: look up the agent's `rs` from the registry; before `agent.Prompt(input)`, mint `runID := ledger.NewEventID().String()`, call `rs.set(runID)`, and `Record` a `KindRequest` event (`EventID: NewEventID, RunID: runID, Kind: KindRequest, Args: json input`) to the sink (best-effort). After the run completes (in the existing defer), `Record` a `KindRunEnd` and call `rs.clear()`.
+In `stream.go` `Stream`: look up the agent's `rs` from the registry. Before `agent.Prompt(input)`:
+- mint the request event id `reqID := ledger.NewEventID()` and the run id `runID := ledger.NewEventID().String()`;
+- `rs.begin(runID, reqID, input)` — if it returns `ErrRunActive`, abort this Stream (emit an error event and return; a run is already live on this agent);
+- best-effort `Record` the `KindRequest` head: `ledger.Event{EventID: reqID, RunID: runID, Kind: ledger.KindRequest, Args: jsonString(input)}`.
+
+The gate/middleware later read `rs.request()` to embed the request id (`reqID`) and text into the action, so the action is self-explaining even if this best-effort `KindRequest` head was lost. After the run completes (existing defer), best-effort `Record` a `KindRunEnd` and call `rs.end(runID)`.
 
 - [ ] **Step 5: Run tests**
 
@@ -740,149 +849,254 @@ git commit -m "feat(core): per-agent runState carries RunID to gate/middleware/C
 
 ---
 
-## Task 8: Gate commits the action (fail-closed enforcement)
+## Task 8: Gate records denied attempts (approval only; durable enforcement is Task 9)
 
 **Files:**
-- Modify: `gate/gate.go` (Policy gains a `DurableSink` + `*runState`-equivalent; on allow for non-safe, commit KindAction or deny)
-- Modify: `internal/core/build.go` (build the gate with the durable sink + runState)
+- Modify: `gate/gate.go` (Policy gains `RunID func() string` and `RequestRef func() ledger.Ref`; on DENY of a non-safe tool, record a best-effort `KindAction` with `Verdict=denied`)
 - Test: `gate/gate_test.go`
 
-**Context:** This is the enforcement point. `gate.Policy` gains a `Ledger ledger.DurableSink` (nil if the configured sink is not durable) and a `RunID func() string` (reads the runState). On a non-safe call that is allowed (safe tools skip this), the gate assembles one `KindAction` event — CallID (`gr.Call.ID`), Tool, Args (the target), the verdict reason, RunID, and `Refs` embedding the request/why — and calls `Ledger.CommitAction`. If `Ledger` is nil (not durable) or `CommitAction` errors, it returns DENY. No durable record, no action.
+**Context:** The gate is human approval, and it is swappable (`AllowAll`, `WithToolGate`), so it is NOT where "no record, no action" can be enforced — a custom gate would bypass it. That enforcement moves to the audit middleware in Task 9, which agentcore runs for every tool that is about to execute regardless of which gate allowed it. The gate's one ledger job here is the thing the middleware cannot do: record DENIED non-safe attempts, because agentcore short-circuits denials before the middleware runs (loop.go:840), so without this a rogue attempt would vanish from the chain. The denied record is best-effort (the action did not run, so there is nothing dangerous to fail-close on).
 
 - [ ] **Step 1: Write the failing test**
 
 ```go
-type denyDurable struct{ recSink }
-
-func (denyDurable) CommitAction(ledger.Event) error { return errors.New("boom") }
-
-func TestNonSafeDeniedWhenLedgerNotDurable(t *testing.T) {
-	rs := &recSink{} // plain Sink, not DurableSink
-	g := New(Policy{Audit: rs, Approver: func(context.Context, Request) (bool, string) { return true, "ok" }})
+func TestDeniedNonSafeRecordsKindAction(t *testing.T) {
+	rs := &recSink{}
+	g := New(Policy{
+		Audit:      rs,
+		RunID:      func() string { return "run1" },
+		RequestRef: func() ledger.Ref { return ledger.Ref{Source: ledger.RefTool, ID: "req1"} },
+		// no approver => non-safe denied (fail-closed default)
+	})
 	d, _ := g(context.Background(), req(dangerTool{}))
 	if d == nil || d.Allowed {
-		t.Fatal("approver allowed but ledger is not durable => must deny (no record, no action)")
+		t.Fatal("non-safe with no approver must be denied")
 	}
-}
-
-func TestNonSafeDeniedWhenCommitFails(t *testing.T) {
-	dd := denyDurable{}
-	g := New(Policy{Audit: dd, Ledger: dd, RunID: func() string { return "r1" },
-		Approver: func(context.Context, Request) (bool, string) { return true, "ok" }})
-	d, _ := g(context.Background(), req(dangerTool{}))
-	if d == nil || d.Allowed {
-		t.Fatal("commit failed => must deny")
+	var sawDeniedAction bool
+	for _, e := range rs.events {
+		if e.Kind == ledger.KindAction && e.Verdict == ledger.VerdictDenied && e.RunID == "run1" {
+			sawDeniedAction = true
+		}
+	}
+	if !sawDeniedAction {
+		t.Fatalf("denied non-safe attempt must land in the chain as a KindAction(denied): %+v", rs.events)
 	}
 }
 ```
-
-(Define `RunID func() string` and `Ledger ledger.DurableSink` on `Policy`. `recSink` from the existing gate test is a plain Sink.)
 
 - [ ] **Step 2: Run, confirm fail**
 
-Run: `go test ./gate/ -run 'NonSafeDenied'`
-Expected: FAIL (Policy has no Ledger/RunID; approver path currently allows).
+Run: `go test ./gate/ -run DeniedNonSafe`
+Expected: FAIL (Policy has no RunID/RequestRef; no KindAction recorded on denial).
 
 - [ ] **Step 3: Edit `gate/gate.go`**
 
-Add to `Policy`: `Ledger ledger.DurableSink` and `RunID func() string`. In `New`, in the non-safe branch AFTER the approver says allow (and for the no-approver fail-closed path leave as-is), before returning allow:
+Add to `Policy`: `RunID func() string` and `RequestRef func() ledger.Ref` (both nil-safe). In `New`, whenever a NON-safe call is DENIED (the no-approver path and the approver-says-no path), in addition to the existing best-effort gate-decision `rec(...)`, record a best-effort denied action so it reconstructs into the chain:
 
 ```go
-// Durable, self-explaining record before the action runs. No durable
-// record, no action.
-if p.Ledger == nil {
-	rec(ledger.VerdictDenied, "no durable ledger; non-safe action denied")
-	return &ac.GateDecision{Allowed: false, Reason: "denied: auditing not durable"}, nil
-}
-runID := ""
-if p.RunID != nil {
-	runID = p.RunID()
-}
-action := ledger.Event{
-	EventID: ledger.NewEventID(),
-	RunID:   runID,
-	CallID:  gr.Call.ID,
-	Kind:    ledger.KindAction,
-	Tool:    gr.Call.Name,
-	Args:    gr.Call.Args, // the target: which file, etc.
-	Verdict: ledger.VerdictAllowed,
-	Reason:  reason,
-	// embedded why: the request/evidence travels with the action so it is
-	// self-explaining even if the KindRequest head is lost.
-	Refs: []ledger.Ref{{Source: ledger.RefTool, ID: runID, Hash: ""}},
-}
-if err := p.Ledger.CommitAction(action); err != nil {
-	rec(ledger.VerdictDenied, "action record not durable: "+err.Error())
-	return &ac.GateDecision{Allowed: false, Reason: "denied: could not record action"}, nil
+func (p Policy) recordDeniedAction(gr ac.GateRequest, reason string) {
+	if p.Audit == nil {
+		return
+	}
+	runID, ref := "", ledger.Ref{}
+	if p.RunID != nil {
+		runID = p.RunID()
+	}
+	if p.RequestRef != nil {
+		ref = p.RequestRef()
+	}
+	_ = p.Audit.Record(ledger.Event{
+		EventID: ledger.NewEventID(),
+		RunID:   runID,
+		CallID:  gr.Call.ID,
+		Kind:    ledger.KindAction,
+		Tool:    gr.Call.Name,
+		Args:    gr.Call.Args,
+		Verdict: ledger.VerdictDenied,
+		Reason:  reason,
+		Refs:    []ledger.Ref{ref},
+	})
 }
 ```
 
-Then return the existing allow decision. (Safe tools still short-circuit to allow at the top of `New`, no KindAction.) Keep the existing audit `rec(...)` for the gate decision as before.
+Call `p.recordDeniedAction(gr, reason)` on each non-safe denial. The gate does NOT commit allowed actions; the middleware does (Task 9). Safe tools still short-circuit to allow with no KindAction.
 
-- [ ] **Step 4: Build the gate with the durable sink in `build.go`**
+- [ ] **Step 4: Run tests**
 
-In `core.Agent(cfg)`, when constructing the gate (currently `gate.New(gate.Policy{...})` happens in root `jess.go:44`, but move/extend it so the durable sink + runState are passed): set `Ledger:` to `cfg.Audit` type-asserted to `ledger.DurableSink` (nil if not durable), and `RunID: rs.runID`. Update `jess.go` where the default gate is built to thread these through (Task 10 finalizes the root wiring; here just make the types compile and the gate test pass).
-
-- [ ] **Step 5: Run tests**
-
-Run: `go test -race ./gate/ ./internal/core/`
+Run: `go test -race ./gate/`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add gate/ internal/core/
-git commit -m "feat(gate): commit durable KindAction before non-safe execution; deny if not durable"
+git add gate/
+git commit -m "feat(gate): record denied non-safe attempts as KindAction(denied) so they stay visible"
 ```
 
 ---
 
-## Task 9: Middleware + ContextManager capture
+## Task 9: Middleware enforces "no record, no action" (gate-independent) + ContextManager capture
 
 **Files:**
-- Modify: `internal/core/audit_mw.go` (tag RunID + CallID; safe vs non-safe result)
+- Modify: `internal/core/audit_mw.go` (durable KindAction commit + deny for non-safe; tag RunID/CallID; KindToolResult)
+- Modify: `internal/core/build.go` (compute the non-safe tool-name set; pass durable sink + runState + set into the middleware)
 - Modify: `internal/core/context_manager.go` (emit KindRetrieved refs)
-- Test: `internal/core/build_test.go` (extend)
+- Test: `internal/core/audit_mw_test.go`, `internal/core/build_test.go`
 
-**Context:** The middleware now reads RunID from the captured `*runState` and tags every `KindToolResult` with `CallID` (from `call.ID`) so it pairs with the gate's `KindAction`. The ContextManager emits a `KindRetrieved` event listing refs of injected memory.
+**Context:** The middleware is where "no durable record, no action" is actually enforced, because agentcore runs it for every tool that is about to execute, regardless of which gate (default, `AllowAll`, custom `WithToolGate`) allowed it. For a non-safe tool the middleware commits one durable, self-explaining `KindAction` BEFORE calling `next`, and if the sink is not a `DurableSink` or `CommitAction` fails, it returns an error so the tool never runs. This closes the gate-bypass: a permissive gate can skip approval, but nothing skips the durable record. Safe tools just get a best-effort `KindToolResult`. The non-safe set is computed in `build.go` from the registered tools (a tool is safe only if it implements `gate.SafeTool` and `Safe()` is true).
 
-- [ ] **Step 1: Write the failing test (extend build_test.go)**
+- [ ] **Step 1: Write the failing tests**
 
 ```go
-func TestRetrievedAndResultTaggedWithRun(t *testing.T) {
-	rs := &recSink{}
-	// build an agent with memory + a tool, run it, then inspect rs.events:
-	// assert at least one KindToolResult carries a non-empty RunID and CallID,
-	// and (if memory injected) a KindRetrieved with Refs.
-	// (Use the existing build_test harness pattern; drive via core.Stream.)
+package core
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"testing"
+
+	ac "github.com/voocel/agentcore"
+
+	"github.com/guygrigsby/jess/ledger"
+)
+
+type durRec struct {
+	recSink              // embeds Record (pointer receiver) — use *durRec
+	commitErr error
+	committed []ledger.Event
+}
+
+func (d *durRec) CommitAction(e ledger.Event) error {
+	if d.commitErr != nil {
+		return d.commitErr
+	}
+	d.committed = append(d.committed, e)
+	return nil
+}
+
+func runMW(sink ledger.Sink, nonSafe map[string]bool, rs *runState, name string) (json.RawMessage, error) {
+	mw := auditMiddleware(sink, nonSafe, rs, "root")
+	call := ac.ToolCall{ID: "c1", Name: name, Args: []byte(`{"path":"/tmp/x"}`)}
+	return mw(context.Background(), call, func(context.Context, json.RawMessage) (json.RawMessage, error) {
+		return []byte(`"ran"`), nil
+	})
+}
+
+func TestMWNonSafeDeniedWhenSinkNotDurable(t *testing.T) {
+	rs := &runState{}
+	_ = rs.begin("r1", ledger.NewEventID(), "do it")
+	_, err := runMW(&recSink{}, map[string]bool{"delete_file": true}, rs, "delete_file")
+	if err == nil {
+		t.Fatal("non-safe + non-durable sink must error (tool denied, never ran)")
+	}
+}
+
+func TestMWNonSafeDeniedWhenCommitFails(t *testing.T) {
+	rs := &runState{}
+	_ = rs.begin("r1", ledger.NewEventID(), "do it")
+	d := &durRec{commitErr: errors.New("disk full")}
+	_, err := runMW(d, map[string]bool{"delete_file": true}, rs, "delete_file")
+	if err == nil {
+		t.Fatal("commit failure must deny the action")
+	}
+}
+
+func TestMWNonSafeCommitsThenRuns(t *testing.T) {
+	rs := &runState{}
+	_ = rs.begin("r1", ledger.NewEventID(), "do it")
+	d := &durRec{}
+	out, err := runMW(d, map[string]bool{"delete_file": true}, rs, "delete_file")
+	if err != nil || string(out) != `"ran"` {
+		t.Fatalf("durable commit should allow the run: out=%s err=%v", out, err)
+	}
+	if len(d.committed) != 1 || d.committed[0].Kind != ledger.KindAction || d.committed[0].CallID != "c1" {
+		t.Fatalf("expected one committed KindAction: %+v", d.committed)
+	}
+	if len(d.committed[0].Args) == 0 || len(d.committed[0].Refs) == 0 {
+		t.Fatal("committed action must be self-explaining (Args + embedded why)")
+	}
+}
+
+func TestMWSafeToolBestEffort(t *testing.T) {
+	rs := &runState{}
+	_ = rs.begin("r1", ledger.NewEventID(), "look")
+	// "list" is not in the non-safe set -> safe -> runs even with a plain sink.
+	out, err := runMW(&recSink{}, map[string]bool{}, rs, "list")
+	if err != nil || string(out) != `"ran"` {
+		t.Fatalf("safe tool must run best-effort: out=%s err=%v", out, err)
+	}
 }
 ```
 
-(Write it concretely against the existing `build_test.go` harness: seed an `InMemoryStore`, register a safe tool the echo model calls, run via `core.Stream`, then scan `rs.events` for a `KindToolResult` with `RunID != ""` and `CallID != ""`.)
-
 - [ ] **Step 2: Run, confirm fail**
 
-Run: `go test ./internal/core/ -run RetrievedAndResult`
-Expected: FAIL (events untagged / no KindRetrieved).
+Run: `go test ./internal/core/ -run 'MWNonSafe|MWSafe'`
+Expected: FAIL (auditMiddleware signature differs; no enforcement).
 
-- [ ] **Step 3: Edit `audit_mw.go`**
+- [ ] **Step 3: Rewrite `auditMiddleware` in `audit_mw.go`**
 
-The middleware closure gains a `*runState` param (captured in build.go). Change the recorded events to set `EventID: ledger.NewEventID()`, `RunID: rs.runID()`, `CallID: call.ID`, and use `KindToolResult` for the outcome (drop the separate `KindToolRequest` for non-safe tools, since the gate's `KindAction` is the intent record; safe tools still record a single `KindToolResult`).
+```go
+func auditMiddleware(sink ledger.Sink, nonSafe map[string]bool, rs *runState, agentPath string) ac.ToolMiddleware {
+	return func(ctx context.Context, call ac.ToolCall, next ac.ToolExecuteFunc) (json.RawMessage, error) {
+		runID := rs.runID()
+		if nonSafe[call.Name] {
+			// Enforcement: a non-safe tool may not run without a durable,
+			// self-explaining action record. Gate-independent.
+			durable, ok := sink.(ledger.DurableSink)
+			if !ok {
+				return nil, fmt.Errorf("ledger not durable; action %q denied (no record, no action)", call.Name)
+			}
+			reqID, reqText := rs.request()
+			action := ledger.Event{
+				EventID: ledger.NewEventID(),
+				RunID:   runID,
+				CallID:  call.ID,
+				Kind:    ledger.KindAction,
+				Tool:    call.Name,
+				Args:    call.Args, // the target (which file, etc.)
+				Verdict: ledger.VerdictAllowed,
+				// embedded why: request id + text, so the action is
+				// self-explaining even if the KindRequest head was lost.
+				Reason: reqText,
+				Refs:   []ledger.Ref{{Source: ledger.RefTool, ID: reqID.String(), Hash: ""}},
+			}
+			if err := durable.CommitAction(action); err != nil {
+				return nil, fmt.Errorf("action %q denied: record not durable: %w", call.Name, err)
+			}
+		}
+		res, err := next(ctx, call.Args)
+		ev := ledger.Event{EventID: ledger.NewEventID(), RunID: runID, CallID: call.ID,
+			Kind: ledger.KindToolResult, Tool: call.Name, Result: res}
+		if err != nil {
+			ev.Err = err.Error()
+		}
+		_ = sink.Record(ev) // outcome: best-effort
+		return res, err
+	}
+}
+```
 
-- [ ] **Step 4: Edit `context_manager.go`**
+(Add `"fmt"` to imports.)
 
-After the ContextManager selects entries to inject, record one `KindRetrieved` event: `Refs` = one `Ref{Source: RefMemory, ID: entry.ID, Hash: sha256(entry.Text)}` per injected entry, `RunID` from the captured `*runState`, via the best-effort `Record`. The CM gains the `*runState` and the `Sink` (passed from build.go). Memory failure still never blocks (best-effort).
+- [ ] **Step 4: Compute the non-safe set and wire in `build.go`**
 
-- [ ] **Step 5: Run tests**
+In `core.Agent(cfg)`, after collecting all tools (`cfg.Tools` + skill tools + subagent tool), build `nonSafe := map[string]bool{}`: for each tool, `safe := false; if st, ok := tool.(gate.SafeTool); ok { safe = st.Safe() }; if !safe { nonSafe[tool.Name()] = true }`. Pass `cfg.Audit, nonSafe, rs, cfg.AgentID` into `auditMiddleware`.
+
+- [ ] **Step 5: Edit `context_manager.go`**
+
+After the ContextManager selects entries to inject, best-effort `Record` one `KindRetrieved` event: `RunID: rs.runID()`, `Refs` = one `ledger.Ref{Source: RefMemory, ID: entry.ID, Hash: sha256hex(entry.Text)}` per injected entry. The CM gains the `*runState` and the `Sink` (passed from build.go). Memory failure still never blocks (best-effort).
+
+- [ ] **Step 6: Run tests**
 
 Run: `go test -race ./internal/core/`
 Expected: PASS.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
 git add internal/core/
-git commit -m "feat(core): middleware tags RunID/CallID; ContextManager emits KindRetrieved refs"
+git commit -m "feat(core): middleware enforces durable action record gate-independently; CM emits KindRetrieved"
 ```
 
 ---
@@ -938,7 +1152,11 @@ Expected: FAIL until wiring is complete.
 
 - [ ] **Step 3: Edit `ledger_opts.go` and `jess.go`**
 
-`defaultLedger()` opens `ledger.OpenSQLite(filepath.Join(os.UserCacheDir()/"jess"/"ledger.db"))`, falling back to `ledger.DiscardSink{}` only if it cannot open (and that fallback then denies actions, which is the safe failure). In `jess.New`, build the gate with `gate.Policy{Approver: st.approver, Audit: cfg.Audit, AgentPath: cfg.AgentID, Ledger: asDurable(cfg.Audit), RunID: <agent runState lookup>}`. Provide `asDurable(s ledger.Sink) ledger.DurableSink` returning the type-assertion or nil. The RunID func resolves through the agent's runState (exposed by `core` via a helper, e.g. `core.RunIDFunc(agent)` returning `func() string`, since the gate is built before the agent — instead pass the `*runState` the build created; thread it from `core.Agent`). Simplest: move the default-gate construction into `core.Agent` (it already has `rs`), and have `jess.New` pass the approver + durable sink into `cfg`, letting `core.Agent` assemble the gate with `rs.runID`.
+First re-export `Request` so the public approver signature compiles: in `gate_opts.go` add `type Request = gate.Request` next to the existing `type Approver = gate.Approver`.
+
+`defaultLedger()` opens `ledger.OpenSQLite(filepath.Join(cacheDir, "jess", "ledger.db"))`, falling back to `ledger.DiscardSink{}` only if it cannot open — and that fallback then denies non-safe actions (the middleware sees a non-durable sink), which is the safe failure.
+
+Move the default-gate construction into `core.Agent` (it already holds `rs`), since the gate now needs the run lookup. `jess.New` passes `cfg.Approver` (from `st.approver`) and `cfg.Audit` into `cfg`; `core.Agent` assembles `gate.New(gate.Policy{ Approver: cfg.Approver, Audit: cfg.Audit, AgentPath: cfg.AgentID, RunID: rs.runID, RequestRef: func() ledger.Ref { id, _ := rs.request(); return ledger.Ref{Source: ledger.RefTool, ID: id.String()} } })` unless the caller supplied a custom gate via `WithToolGate`/`AllowAll`. The durable sink does NOT go to the gate; it reaches the middleware (Task 9), so a custom gate cannot bypass the durable-action enforcement.
 
 - [ ] **Step 4: Run tests**
 
@@ -1015,4 +1233,5 @@ git commit -m "docs: ledger package, ADR 0003 (provenance ledger)"
 - Spec coverage: rename (T1), Event+Refs+CallID (T2), Sink/DurableSink (T3), Chain/AssembleChain (T4), SQLite Sink+CommitAction+Reader (T5), Resolver/EntryGetter drift (T6), RunID-via-runState not ctx (T7), gate fail-closed CommitAction + DiscardSink-denies (T8), middleware/CM capture + KindRetrieved (T9), default SQLite + root wiring (T10), integration incl self-explaining/why-survives/CallID/drift (T11), docs/ADR (T12). All spec sections mapped.
 - The single trickiest mechanism is the per-agent `runState` (T7) replacing the spec's ctx wiring; it is called out because the gate/middleware/CM are built before the agent exists. Verify the one-active-run invariant holds (Stream sets/clears around one Prompt) so the shared runState is race-free; `-race` on the integration tests guards it.
 - Agentcore field names to confirm against the cache before writing: `GateRequest.Call.ID` and `ToolCall.ID` (T8), `ToolMiddleware`'s `call.ID` (T9). The plan assumes `ToolCall.ID` exists (tool.go:84, confirmed in the spec review).
+- Review-driven corrections folded in (codex pass on the plan): (1) enforcement of "no record, no action" lives in the MIDDLEWARE, not the gate, so `AllowAll`/`WithToolGate` cannot bypass it (T9); (2) the gate records denied non-safe attempts so they stay visible, since agentcore short-circuits denials before the middleware (T8); (3) `NewEventID` is monotonic and `Chain` orders by `ts, id` (T2/T5); (4) `CommitAction` validates a self-explaining action and uses plain `INSERT`, not `INSERT OR REPLACE` (T5); (5) `runState.begin` fails on an active run and `end` is owner-checked (T7); (6) the action embeds the request id+text from `runState` so it is self-explaining even if the head is lost (T7/T9); (7) `jess.Request` is re-exported and the test fakes use pointer receivers (T10/T9).
 - Green-between-tasks: T1-T6 are additive/green per task (ledger package builds in isolation). T7-T10 interlock through `runState`/gate/sink; each ends with `go test ./internal/core/ ./gate/ ./.` green, and T10 restores full-module green. T11 is the end-to-end proof.
