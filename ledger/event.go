@@ -93,14 +93,3 @@ type Event struct {
 	DurationMS int64           `json:"duration_ms,omitempty"`
 }
 
-// Sink receives audit Events. Implementations must be safe for concurrent use.
-type Sink interface {
-	Record(Event) error
-}
-
-// DiscardSink drops every Event. Turning recording off is explicit (pass this to
-// jess.WithLedger), never silent.
-type DiscardSink struct{}
-
-// Record satisfies Sink.
-func (DiscardSink) Record(Event) error { return nil }
