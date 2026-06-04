@@ -3,7 +3,6 @@ package jess
 import (
 	"os"
 	"path/filepath"
-	"sync"
 
 	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/internal/core"
@@ -15,30 +14,22 @@ func WithLedger(sink ledger.Sink) Option {
 	return func(c *core.Config, _ *newState) { c.Audit = sink }
 }
 
-var (
-	defaultSinkOnce sync.Once
-	defaultSinkVal  ledger.Sink
-)
-
-// defaultLedger returns the process-wide default JSONL audit sink under the user
-// cache dir. Using a singleton prevents two jess.New() calls without WithLedger
-// from opening separate file descriptors and interleaving writes to the same
-// file. Falls back to DiscardSink if the path cannot be opened.
+// defaultLedger opens the durable SQLite audit ledger under the user cache dir.
+// SQLite is a DurableSink, so audited non-safe actions can run by default: the
+// audit middleware's "no durable record, no action" enforcement is satisfied.
+// Falls back to DiscardSink if the cache dir or db cannot be opened, which is
+// the safe failure (non-durable => non-safe actions are denied, never silently
+// run unaudited).
 func defaultLedger() ledger.Sink {
-	defaultSinkOnce.Do(func() {
-		dir, err := os.UserCacheDir()
-		if err != nil {
-			defaultSinkVal = ledger.DiscardSink{}
-			return
-		}
-		d := filepath.Join(dir, "jess")
-		_ = os.MkdirAll(d, 0o700)
-		s, err := ledger.NewJSONLSink(filepath.Join(d, "ledger.jsonl"))
-		if err != nil {
-			defaultSinkVal = ledger.DiscardSink{}
-			return
-		}
-		defaultSinkVal = s
-	})
-	return defaultSinkVal
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return ledger.DiscardSink{}
+	}
+	d := filepath.Join(dir, "jess")
+	_ = os.MkdirAll(d, 0o700)
+	db, err := ledger.OpenSQLite(filepath.Join(d, "ledger.db"))
+	if err != nil {
+		return ledger.DiscardSink{}
+	}
+	return db
 }

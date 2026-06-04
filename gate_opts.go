@@ -14,10 +14,13 @@ type SafeTool = gate.SafeTool
 // plugs in here).
 type Approver = gate.Approver
 
+// Request is what an Approver sees for one non-safe call.
+type Request = gate.Request
+
 // WithApprover installs the human approver for dangerous calls. Without it the
 // gate is fail-closed (non-safe tools are denied).
 func WithApprover(a gate.Approver) Option {
-	return func(_ *core.Config, s *newState) { s.approver = a }
+	return func(c *core.Config, _ *newState) { c.Approver = a }
 }
 
 // WithToolGate installs a fully custom gate, bypassing the default policy.
@@ -27,5 +30,5 @@ func WithToolGate(g ac.ToolGate) Option {
 
 // AllowAll is the explicit, greppable opt-out from the fail-closed default.
 func AllowAll() Option {
-	return func(_ *core.Config, s *newState) { s.allowAll = true }
+	return func(c *core.Config, _ *newState) { c.AllowAll = true }
 }

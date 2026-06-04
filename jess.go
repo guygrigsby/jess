@@ -3,7 +3,6 @@ package jess
 import (
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/gate"
 	"github.com/guygrigsby/jess/internal/core"
 	"github.com/guygrigsby/jess/memory"
 	"github.com/guygrigsby/jess/skill"
@@ -13,11 +12,10 @@ import (
 type Option func(*core.Config, *newState)
 
 // newState holds option-time extras that need post-processing after all options
-// have run (the gate policy, the subagent pool).
+// have run (the subagent pool). The gate's approver/allowAll live on core.Config
+// so core.Agent can build the default gate wired to its per-agent runState.
 type newState struct {
 	subagentSpecs []any // resolved to []subagent.Spec by WithSubagents/attachSubagents
-	approver      gate.Approver
-	allowAll      bool
 }
 
 // New assembles a ready *agentcore.Agent: model, memory, skills, tools, gate,
@@ -25,9 +23,10 @@ type newState struct {
 // agentcore's API or jess.Stream.
 //
 // The gate is fail-closed by default: without an approver (or AllowAll), any
-// tool not marked Safe is denied. Audit is on by default (a durable JSONL sink
+// tool not marked Safe is denied. Audit is on by default (a durable SQLite sink
 // under the user cache dir); pass WithLedger(ledger.DiscardSink{}) to turn it off
-// explicitly.
+// explicitly. With audit off, non-safe actions cannot run: "no durable record,
+// no action".
 func New(opts ...Option) *ac.Agent {
 	cfg := core.Config{}
 	st := &newState{}
@@ -37,13 +36,9 @@ func New(opts ...Option) *ac.Agent {
 	if cfg.Audit == nil {
 		cfg.Audit = defaultLedger()
 	}
-	if cfg.Gate == nil {
-		if st.allowAll {
-			cfg.Gate = gate.AllowAll()
-		} else {
-			cfg.Gate = gate.New(gate.Policy{Approver: st.approver, Audit: cfg.Audit, AgentPath: cfg.AgentID})
-		}
-	}
+	// The default gate (built from cfg.Approver/cfg.AllowAll, wired to runState
+	// for run-linkage) is constructed in core.Agent. A custom WithToolGate sets
+	// cfg.Gate and wins there.
 	attachSubagents(&cfg, st)
 	return core.Agent(cfg)
 }

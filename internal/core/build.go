@@ -64,6 +64,14 @@ type Config struct {
 	Gate         ac.ToolGate
 	Audit        ledger.Sink
 	Extra        []ac.AgentOption // passthrough for the long tail
+
+	// Approver and AllowAll configure the default gate that Agent builds when
+	// Gate is nil. A non-nil Gate (jess.WithToolGate) wins and both are ignored.
+	// AllowAll is the explicit, greppable opt-out from the fail-closed default.
+	// Neither bypasses the audit middleware's "no durable record, no action"
+	// enforcement: that is gate-independent.
+	Approver gate.Approver
+	AllowAll bool
 }
 
 // Agent assembles a ready *agentcore.Agent from cfg. The audit middleware is
@@ -122,8 +130,30 @@ func Agent(cfg Config) *ac.Agent {
 				RunState: rs,
 			})))
 	}
-	if cfg.Gate != nil {
-		opts = append(opts, ac.WithToolGate(cfg.Gate))
+	// Resolve the gate. A custom gate (jess.WithToolGate) wins outright. Otherwise
+	// build the default fail-closed gate here so it can be wired to rs for
+	// run-linkage on denied actions: AllowAll opts out explicitly, anything else
+	// requires an approver (nil approver => deny non-safe). Neither path bypasses
+	// the audit middleware's "no durable record, no action" enforcement below.
+	g := cfg.Gate
+	if g == nil {
+		if cfg.AllowAll {
+			g = gate.AllowAll()
+		} else {
+			g = gate.New(gate.Policy{
+				Approver:  cfg.Approver,
+				Audit:     cfg.Audit,
+				AgentPath: cfg.AgentID,
+				RunID:     rs.runID,
+				RequestRef: func() ledger.Ref {
+					id, _ := rs.request()
+					return ledger.Ref{Source: ledger.RefTool, ID: id.String()}
+				},
+			})
+		}
+	}
+	if g != nil {
+		opts = append(opts, ac.WithToolGate(g))
 	}
 	opts = append(opts, ac.WithMiddlewares(auditMiddleware(cfg.Audit, safe, rs, cfg.AgentID)))
 	if cfg.MaxTurns > 0 {
