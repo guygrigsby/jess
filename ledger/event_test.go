@@ -76,3 +76,33 @@ func TestJSONLSinkConcurrentRecord(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+func TestNewEventIDMonotonicAndParsable(t *testing.T) {
+	a := NewEventID()
+	b := NewEventID()
+	if a.Compare(b) >= 0 {
+		t.Fatalf("ids must increase monotonically: %s !< %s", a, b)
+	}
+	if len(a.String()) != 26 {
+		t.Fatalf("ulid string should be 26 chars, got %q", a.String())
+	}
+	// 1000 in a tight loop must stay strictly increasing (same-ms stress).
+	prev := NewEventID()
+	for i := 0; i < 1000; i++ {
+		cur := NewEventID()
+		if cur.Compare(prev) <= 0 {
+			t.Fatalf("non-monotonic at %d: %s <= %s", i, cur, prev)
+		}
+		prev = cur
+	}
+}
+
+func TestRefSourceValues(t *testing.T) {
+	if RefTool == RefMemory {
+		t.Fatal("ref sources must be distinct")
+	}
+	r := Ref{Source: RefMemory, ID: "m1", Hash: "abc"}
+	if r.Source != RefMemory || r.ID != "m1" {
+		t.Fatalf("ref fields: %+v", r)
+	}
+}
