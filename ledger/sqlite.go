@@ -32,6 +32,12 @@ func OpenSQLite(path string) (*SQLite, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Single writer: concurrent callers queue in Go, never hit SQLITE_BUSY.
+	db.SetMaxOpenConns(1)
+	if _, err := db.Exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL; PRAGMA busy_timeout=5000;`); err != nil {
+		_ = db.Close()
+		return nil, err
+	}
 	if _, err := db.Exec(schema); err != nil {
 		_ = db.Close()
 		return nil, err
