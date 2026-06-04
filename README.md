@@ -10,35 +10,17 @@ on the falcon's leg.
 
 ## What it is
 
-`jess` is the thing the host calls. `jess.New` returns an `Agent`;
-`Agent` and `Session` drive runs and expose a live `event` stream. The
-host wires a model, durable memory, and capability bundles through
-functional options and never touches the underlying harness.
+`jess` is an easy agent harness over [agentcore](https://github.com/voocel/agentcore) with durable memory, skills, subagents, and baked-in audit + a fail-closed tool gate. `jess.New(opts...)` returns a real `*agentcore.Agent`; drive it with `jess.Stream` or directly with agentcore's API.
 
-- **`jess` (root)** — the facade. `jess.New(opts...) -> *Agent`,
-  `Agent.Prompt`/`Continue`/`NewSession`, `Run.Events()`/`Wait()`.
-  Options: `WithModel`, `WithAgentID`, `WithSystemPrompt`, `WithTools`,
-  `WithMemory`, `WithSkills`, `WithMaxTurns`.
+- **`jess` (root)** — `New(opts...) *agentcore.Agent`, `Stream(ctx, agent, input)`, `Once(supportsTools, fn)`. Options: `WithModel`, `WithAgentID`, `WithSystemPrompt`, `WithTools`, `WithMemory`, `WithSkills`, `WithMaxTurns`, `WithApprover`, `WithAudit`, `AllowAll`, `WithToolGate`, `WithSubagents`, `WithAgentcoreOptions`.
 
-- **`jess/memory`** — durable agent memory. Typed `Kind` (user, feedback,
-  project, reference) with per-kind retrieval policy. Three pluggable
-  Stores (in-memory, JSONL, chromem-go vector). A pure-Go embedder
-  (GoMLX + sentence-transformers, no CGO). Recallers compose:
-  `SimpleRecaller` (token overlap) + `VectorRecaller` (cosine) fused
-  via `HybridRecaller` (reciprocal rank fusion). `RememberTool` and
-  `RecallTool` let the model write and read memory. Wired via
-  `jess.WithMemory(store, recaller)`; recalled entries are injected on
-  every turn.
+- **`jess/memory`** — durable agent memory. Typed `Kind` (user, feedback, project, reference) with per-kind retrieval policy. Three pluggable Stores (in-memory, JSONL, chromem-go vector). A pure-Go embedder (GoMLX + sentence-transformers, no CGO). Recallers compose: `SimpleRecaller` (token overlap) + `VectorRecaller` (cosine) fused via `HybridRecaller` (reciprocal rank fusion). `RememberTool` and `RecallTool` let the model write and read memory. Wired via `jess.WithMemory(store, recaller)`; recalled entries are injected on every turn.
 
-- **`jess/skill`** — registerable capability bundles. A `Skill` is a
-  name, description, system-prompt contribution, and zero-or-more
-  tools. Loads from disk (filesystem layout mirrors Claude Code skills)
-  or by direct registration. Wired via `jess.WithSkills(set)`.
+- **`jess/skill`** — registerable capability bundles. A `Skill` is a name, description, system-prompt contribution, and zero-or-more tools. Loads from disk (filesystem layout mirrors Claude Code skills) or by direct registration. Wired via `jess.WithSkills(set)`.
 
-[agentcore](https://github.com/voocel/agentcore) (the loop, providers,
-tool dispatch, permission engine, context compaction) is an internal
-implementation detail, imported only under `internal/acl` and enforced
-by a boundary test. No agentcore type appears in jess's public API.
+- **`jess/audit`** — durable JSONL audit log (agentcore-free). Every tool request, gate decision, and run boundary is recorded. `DiscardSink{}` turns audit off explicitly; it is never off silently.
+
+- **`jess/gate`** — fail-closed tool gate. Tools implementing `SafeTool` are auto-approved. Everything else goes to the `Approver` if one is wired; without an approver, non-safe tools are denied. `AllowAll()` is the explicit opt-out.
 
 ## Install
 
@@ -56,15 +38,13 @@ Full runnable, offline example at
 
 ```go
 import (
+    ac "github.com/voocel/agentcore"
     "github.com/guygrigsby/jess"
-    "github.com/guygrigsby/jess/event"
+    "github.com/guygrigsby/jess/audit"
     "github.com/guygrigsby/jess/memory"
-    "github.com/guygrigsby/jess/message"
 )
 
-// 1. Durable memory. Seed a core (always-include) user fact. Swap
-//    InMemoryStore for JSONLStore or ChromemStore (+ memory/embed/gomlx)
-//    for persistence or vector recall.
+// 1. Durable memory. Seed a core (always-include) user fact.
 store := memory.NewInMemoryStore()
 store.Append(ctx, memory.Entry{
     AgentID: "demo",
@@ -72,36 +52,25 @@ store.Append(ctx, memory.Entry{
     Text:    "User prefers concise, example-first answers.",
 })
 
-// 2. Build the agent behind the facade. Pass any model.Model:
-//    a cloud model from jess.LiteLLM(provider, modelID), or a local
-//    one (implement model.Model or use model.Once).
-agent, err := jess.New(
-    jess.WithModel(yourModel),
+// 2. Build the agent. jess.New returns a *agentcore.Agent.
+agent := jess.New(
+    jess.WithModel(yourModel),  // any agentcore.ChatModel; jess.Once for local fns
     jess.WithAgentID("demo"),
     jess.WithMemory(store, memory.NewSimpleRecaller()),
+    jess.WithAudit(audit.DiscardSink{}), // or omit for durable JSONL default
 )
-if err != nil {
-    log.Fatal(err)
-}
 
-// 3. Drive a run and observe its event stream.
-run, _ := agent.Prompt(ctx, "What kind of answers do I like?")
-for ev := range run.Events() {
-    switch ev.Kind {
-    case event.KindToolStart:
+// 3. Drive a run and observe its event channel.
+ch, wait := jess.Stream(ctx, agent, "What kind of answers do I like?")
+for ev := range ch {
+    switch ev.Type {
+    case ac.EventToolExecStart:
         fmt.Printf("-> tool %s\n", ev.Tool)
-    case event.KindError:
+    case ac.EventError:
         fmt.Printf("! error: %v\n", ev.Err)
     }
 }
-
-// 4. Final result: the assistant messages, plus a run summary.
-res, _ := run.Wait()
-for _, m := range res.Messages {
-    if m.Role == message.RoleAssistant {
-        fmt.Println(m.Text())
-    }
-}
+sum := wait() // *agentcore.RunSummary; nil on abort
 ```
 
 The agent:
@@ -110,20 +79,27 @@ The agent:
 - Can save and query facts via the `remember` / `recall` tools.
 - Persists across restarts (with a durable Store).
 
+## Safety: audit + fail-closed gate
+
+Every `jess.New` agent is safe by default. Two controls are baked in:
+
+**Audit.** Every tool request, gate decision (allow *or* deny), and run boundary is appended to a JSONL log under the user cache dir (`~/.cache/jess/audit.jsonl` on macOS/Linux). Blocked attempts are recorded before the call is denied, so rogue tool calls stay visible. Pass `jess.WithAudit(audit.DiscardSink{})` to turn it off explicitly.
+
+**Fail-closed gate.** A tool not implementing `gate.SafeTool` (or returning `Safe() == false`) is denied unless an `Approver` is wired via `jess.WithApprover`. No approver means deny, not allow. `jess.AllowAll()` is the explicit, greppable opt-out. See [`examples/gated`](./examples/gated) for a stdin approver stand-in for an async Telegram confirm flow.
+
 ## Project layout
 
 ```
 jess/
-├── agent.go, options.go, litellm.go  # the facade: jess.New, Agent, Session, options
-├── message/                      # Message, ContentBlock, Role
-├── event/                        # Event, EventKind, Stream (the run stream)
-├── tool/                         # the Tool interface the model invokes
-├── model/                        # vendor-free streaming Model interface (model.Once, ToolSpec)
-├── memory/                       # the memory subsystem
+├── jess.go, adapters.go, gate_opts.go, audit_opts.go, subagent_opts.go
+│                                 # New, Stream, Once, With* options
+├── audit/                        # durable JSONL audit log (agentcore-free)
+├── gate/                         # fail-closed tool gate (SafeTool, Approver, Policy)
+├── memory/                       # the memory subsystem (agentcore-free)
 │   ├── memory.go                 # Entry, Store, Query, Recaller, VectorStore
 │   ├── kind.go                   # Kind constants, KindPolicy, KindRegistry
-│   ├── tool.go                   # RememberTool (tool.Tool)
-│   ├── recall_tool.go            # RecallTool (tool.Tool)
+│   ├── tool.go                   # RememberTool (agentcore.Tool)
+│   ├── recall_tool.go            # RecallTool (agentcore.Tool)
 │   ├── store_inmemory.go         # InMemoryStore
 │   ├── store_jsonl.go            # JSONLStore (durable, tombstones, Compact)
 │   ├── store_chromem.go          # ChromemStore (vector, on chromem-go)
@@ -131,11 +107,14 @@ jess/
 │   ├── recall_vector.go          # VectorRecaller + HybridRecaller (RRF)
 │   ├── embedder.go               # Embedder interface
 │   └── embed/gomlx/              # in-process pure-Go embedder
-├── skill/                        # skill bundles
+├── skill/                        # skill bundles (agentcore-free)
 │   ├── skill.go                  # Skill, Set, Loader
 │   └── filesystem.go             # SKILL.md walker (Claude Code layout)
-├── subagent/                     # bounded Pool for fast, abundant subagents
-└── internal/acl/                 # anti-corruption layer: the ONLY agentcore importer
+├── subagent/                     # bounded Pool for fan-out subagents
+├── internal/core/                # Config + Agent builder, Once, Stream, audit middleware
+└── examples/
+    ├── quickstart/               # offline echo-model demo with memory
+    └── gated/                    # stdin approver stand-in for Telegram confirm
 ```
 
 ## Design choices

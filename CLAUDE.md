@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`jess` is two extension packages on top of [`agentcore`](https://github.com/voocel/agentcore): durable agent memory (`memory/`) and registerable capability bundles (`skills/`). It deliberately does NOT reimplement the agentcore harness, providers, tool dispatch, permission engine, or compaction. Pure Go, no CGO (preserves cross-compile).
+`jess` is an easy agent harness over [`agentcore`](https://github.com/voocel/agentcore) with durable memory, skills, subagents, and baked-in audit + a fail-closed tool gate. `jess.New(opts...)` returns a real `*agentcore.Agent`; drive it with `jess.Stream` or directly with agentcore's API. Pure Go, no CGO (preserves cross-compile).
 
 ## Commands
 
@@ -24,6 +24,16 @@ JESS_EMBEDDER_E2E=1 go test -timeout 5m ./memory/embed/gomlx/...
 CI (`.github/workflows/test.yml`) runs `go vet`, `go test -race`, and a non-blocking `govulncheck`. Go 1.26+.
 
 ## Architecture
+
+### Package layout
+
+- **`jess` (root)** — `New`, `Stream`, `Once`, `Option`, `With*`. Assembles a `*agentcore.Agent` from functional options; bakes in audit and the fail-closed gate.
+- **`internal/core`** — `Config`, `Agent(cfg)` builder, `Once` model adapter, `Stream` capture, audit middleware, memory ContextManager wiring, skill block/tool helpers. Imported by root `jess` and `subagent`; never by callers.
+- **`audit/`** — agentcore-free: `Event`, `Kind`, `Sink`, `JSONLSink`, `DiscardSink`. Durable JSONL log of every tool request, gate decision, and run boundary.
+- **`gate/`** — fail-closed tool gate. `SafeTool` marker, `Approver` func, `Policy`, `New(Policy) agentcore.ToolGate`, `AllowAll()`. Non-safe tools with no approver are denied; denied attempts are recorded to audit before the call is blocked.
+- **`memory/`** — agentcore-free read/write/inject pipeline (see below). Portability insurance: stays importable without pulling in agentcore.
+- **`skill/`** — agentcore-free capability bundles (see below). Same portability guarantee.
+- **`subagent/`** — bounded `Pool` for fan-out subagents. Each subagent is a `*agentcore.Agent` built via `internal/core`.
 
 ### memory/ — the read/write/inject pipeline
 
@@ -51,7 +61,7 @@ Setting `Entry.Key` makes a re-`Append` REPLACE the prior entry at the same `(Ag
 
 Runs BERT-family sentence-transformers ONNX models in-process via GoMLX's pure-Go backend (no CGO, no ONNX Runtime sidecar, no Python/`huggingface-cli`). `NewEmbedder` downloads weights from HuggingFace on first use into the standard HF cache (`$HF_HOME` / `~/.cache/huggingface`); `$HF_ENDPOINT` redirects to mirrors / air-gapped installs, `HF_TOKEN` authenticates. `models.go` holds known-good `Model` constants (Dim+SeqLen pre-filled to avoid the footgun of setting `ModelID` alone with a stale `Dim`); `DefaultModel` is MiniLM-L6-v2. Or pass `Options{ModelID: "org/model"}` and `resolve.go` auto-detects Dim+SeqLen from the repo's `config.json`. New embedder backends (Ollama, OpenAI) land under `memory/embed/<name>/`.
 
-### skills/
+### skill/
 
 A `Skill` (`skill.go`) is Name + Description + SystemPrompt + zero-or-more tools. `Set` holds them (concurrency-safe). `agentcore.go` converts to `SystemBlocks` + `Tools`; `filesystem.go` walks a `SKILL.md` layout mirroring Claude Code skills. Note: `Skill.Tools` is typed `[]any` (not `[]agentcore.Tool`) to keep agentcore out of the surface API; `Set.Tools()` type-asserts.
 
