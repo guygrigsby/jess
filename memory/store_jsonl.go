@@ -329,6 +329,20 @@ func (s *JSONLStore) appendRecordLocked(e Entry) (err error) {
 	return nil
 }
 
+// Get returns the entry for id and true, or the zero Entry and false if
+// the id is unknown or has been tombstoned. Implements EntryGetter.
+// Performs a full file scan (same cost as Recall); suitable for
+// occasional drift checks, not hot paths.
+func (s *JSONLStore) Get(id string) (Entry, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e, err := s.findLatestLocked(id)
+	if err != nil || e == nil {
+		return Entry{}, false
+	}
+	return *e, true
+}
+
 // Compact rewrites the file dropping tombstoned IDs and old versions
 // of replaced entries. Run offline (when no Append is in flight).
 // Safe to call: writes to a temp file and renames atomically.

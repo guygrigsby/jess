@@ -128,6 +128,15 @@ func (s *InMemoryStore) Recall(ctx context.Context, q Query, max int) ([]Entry, 
 	return matched, nil
 }
 
+// Get returns the entry for id and true, or the zero Entry and false
+// if the id is unknown or has been tombstoned. Implements EntryGetter.
+func (s *InMemoryStore) Get(id string) (Entry, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e, ok := s.entries[id]
+	return e, ok
+}
+
 // Forget removes the entry with the given ID. Idempotent — no error
 // for unknown IDs. Also clears any keyToID entry pointing at this
 // ID so a subsequent Append with the same Key starts fresh instead
