@@ -12,13 +12,13 @@ on the falcon's leg.
 
 `jess` is an easy agent harness over [agentcore](https://github.com/voocel/agentcore) with durable memory, skills, subagents, and baked-in audit + a fail-closed tool gate. `jess.New(opts...)` returns a real `*agentcore.Agent`; drive it with `jess.Stream` or directly with agentcore's API.
 
-- **`jess` (root)** — `New(opts...) *agentcore.Agent`, `Stream(ctx, agent, input)`, `Once(supportsTools, fn)`. Options: `WithModel`, `WithAgentID`, `WithSystemPrompt`, `WithTools`, `WithMemory`, `WithSkills`, `WithMaxTurns`, `WithApprover`, `WithAudit`, `AllowAll`, `WithToolGate`, `WithSubagents`, `WithAgentcoreOptions`.
+- **`jess` (root)** — `New(opts...) *agentcore.Agent`, `Stream(ctx, agent, input)`, `Once(supportsTools, fn)`. Options: `WithModel`, `WithAgentID`, `WithSystemPrompt`, `WithTools`, `WithMemory`, `WithSkills`, `WithMaxTurns`, `WithApprover`, `WithLedger`, `AllowAll`, `WithToolGate`, `WithSubagents`, `WithAgentcoreOptions`.
 
 - **`jess/memory`** — durable agent memory. Typed `Kind` (user, feedback, project, reference) with per-kind retrieval policy. Three pluggable Stores (in-memory, JSONL, chromem-go vector). A pure-Go embedder (GoMLX + sentence-transformers, no CGO). Recallers compose: `SimpleRecaller` (token overlap) + `VectorRecaller` (cosine) fused via `HybridRecaller` (reciprocal rank fusion). `RememberTool` and `RecallTool` let the model write and read memory. Wired via `jess.WithMemory(store, recaller)`; recalled entries are injected on every turn.
 
 - **`jess/skill`** — registerable capability bundles. A `Skill` is a name, description, system-prompt contribution, and zero-or-more tools. Loads from disk (filesystem layout mirrors Claude Code skills) or by direct registration. Wired via `jess.WithSkills(set)`.
 
-- **`jess/audit`** — durable JSONL audit log (agentcore-free). Every tool request, gate decision, and run boundary is recorded. `DiscardSink{}` turns audit off explicitly; it is never off silently.
+- **`jess/ledger`** — durable provenance ledger (agentcore-free). Every tool request, gate decision, and run boundary is recorded. The ledger is structured as a chain triad: request, available context, and actions. `SQLite` is the default durable backend (pure-Go, no CGO). `DiscardSink{}` turns recording off explicitly; it is never off silently.
 
 - **`jess/gate`** — fail-closed tool gate. Tools implementing `SafeTool` are auto-approved. Everything else goes to the `Approver` if one is wired; without an approver, non-safe tools are denied. `AllowAll()` is the explicit opt-out.
 
@@ -40,7 +40,7 @@ Full runnable, offline example at
 import (
     ac "github.com/voocel/agentcore"
     "github.com/guygrigsby/jess"
-    "github.com/guygrigsby/jess/audit"
+    "github.com/guygrigsby/jess/ledger"
     "github.com/guygrigsby/jess/memory"
 )
 
@@ -57,7 +57,7 @@ agent := jess.New(
     jess.WithModel(yourModel),  // any agentcore.ChatModel; jess.Once for local fns
     jess.WithAgentID("demo"),
     jess.WithMemory(store, memory.NewSimpleRecaller()),
-    jess.WithAudit(audit.DiscardSink{}), // or omit for durable JSONL default
+    jess.WithLedger(ledger.DiscardSink{}), // or omit for durable SQLite default
 )
 
 // 3. Drive a run and observe its event channel.
@@ -79,21 +79,28 @@ The agent:
 - Can save and query facts via the `remember` / `recall` tools.
 - Persists across restarts (with a durable Store).
 
-## Safety: audit + fail-closed gate
+## Provenance and safety
 
-Every `jess.New` agent is safe by default. Two controls are baked in:
+Every `jess.New` agent is safe by default. Two controls are baked in.
 
-**Audit.** Every tool request, gate decision (allow *or* deny), and run boundary is appended to a JSONL log under the user cache dir (`~/.cache/jess/audit.jsonl` on macOS/Linux). Blocked attempts are recorded before the call is denied, so rogue tool calls stay visible. Pass `jess.WithAudit(audit.DiscardSink{})` to turn it off explicitly.
+**Provenance ledger.** Every tool request, gate decision (allow *or* deny), and run boundary is recorded in a durable SQLite ledger under the user cache dir (`~/.cache/jess/ledger.db` on macOS/Linux). The ledger stores a chain triad per run: the triggering request, available context (memory recall and safe tool reads), and actions (effectful calls). Each action record embeds its own rationale: `RunID`, `CallID`, tool name, args, and a reference back to the request. Reading the chain backward answers "why did the agent do X?" without external documentation. Pass `jess.WithLedger(ledger.DiscardSink{})` to turn recording off explicitly.
 
-**Fail-closed gate.** A tool not implementing `gate.SafeTool` (or returning `Safe() == false`) is denied unless an `Approver` is wired via `jess.WithApprover`. No approver means deny, not allow. `jess.AllowAll()` is the explicit, greppable opt-out. See [`examples/gated`](./examples/gated) for a stdin approver stand-in for an async Telegram confirm flow.
+**Fail-closed gate.** A tool not implementing `gate.SafeTool` is denied unless an `Approver` is wired via `jess.WithApprover`. No approver means deny, not allow. `jess.AllowAll()` is the explicit, greppable opt-out. See [`examples/gated`](./examples/gated) for a stdin approver stand-in for an async Telegram confirm flow.
+
+**No durable record, no action.** The audit middleware in `internal/core` enforces this independently of the gate: before any non-safe tool runs, a fully self-explaining `KindAction` event must be durably committed to a `ledger.DurableSink`. Plain sinks (`JSONLSink`, `DiscardSink`) are observation-only and cannot authorize actions. A permissive gate (`AllowAll`) does not bypass this: the record obligation lives in the middleware, which runs after the gate. Denied non-safe attempts are also recorded as `KindAction(denied)` by the gate, so blocked calls stay visible in the chain.
 
 ## Project layout
 
 ```
 jess/
-├── jess.go, adapters.go, gate_opts.go, audit_opts.go, subagent_opts.go
+├── jess.go, adapters.go, gate_opts.go, ledger_opts.go, subagent_opts.go
 │                                 # New, Stream, Once, With* options
-├── audit/                        # durable JSONL audit log (agentcore-free)
+├── ledger/                       # provenance ledger (agentcore-free)
+│   ├── event.go                  # Event, Kind, Ref, RefSource, Verdict, NewEventID
+│   ├── sink.go                   # Sink, DurableSink, DiscardSink
+│   ├── jsonl.go                  # JSONLSink (observation-only)
+│   ├── sqlite.go                 # SQLite (DurableSink + Reader, pure-Go modernc)
+│   └── chain.go                  # Chain, Action, Reader, Resolver, AssembleChain
 ├── gate/                         # fail-closed tool gate (SafeTool, Approver, Policy)
 ├── memory/                       # the memory subsystem (agentcore-free)
 │   ├── memory.go                 # Entry, Store, Query, Recaller, VectorStore

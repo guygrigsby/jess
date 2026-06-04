@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-`jess` is an easy agent harness over [`agentcore`](https://github.com/voocel/agentcore) with durable memory, skills, subagents, and baked-in audit + a fail-closed tool gate. `jess.New(opts...)` returns a real `*agentcore.Agent`; drive it with `jess.Stream` or directly with agentcore's API. Pure Go, no CGO (preserves cross-compile).
+`jess` is an easy agent harness over [`agentcore`](https://github.com/voocel/agentcore) with durable memory, skills, subagents, a fail-closed tool gate, and a durable provenance ledger. `jess.New(opts...)` returns a real `*agentcore.Agent`; drive it with `jess.Stream` or directly with agentcore's API. Pure Go, no CGO (preserves cross-compile).
 
 ## Commands
 
@@ -27,15 +27,29 @@ CI (`.github/workflows/test.yml`) runs `go vet`, `go test -race`, and a non-bloc
 
 ### Package layout
 
-- **`jess` (root)** — `New`, `Stream`, `Once`, `Option`, `With*`. Assembles a `*agentcore.Agent` from functional options; bakes in audit and the fail-closed gate.
-- **`internal/core`** — `Config`, `Agent(cfg)` builder, `Once` model adapter, `Stream` capture, audit middleware, memory ContextManager wiring, skill block/tool helpers. Imported by root `jess` and `subagent`; never by callers.
-- **`audit/`** — agentcore-free: `Event`, `Kind`, `Sink`, `JSONLSink`, `DiscardSink`. Durable JSONL log of every tool request, gate decision, and run boundary.
-- **`gate/`** — fail-closed tool gate. `SafeTool` marker, `Approver` func, `Policy`, `New(Policy) agentcore.ToolGate`, `AllowAll()`. Non-safe tools with no approver are denied; denied attempts are recorded to audit before the call is blocked.
+- **`jess` (root)** — `New`, `Stream`, `Once`, `Option`, `With*`. Assembles a `*agentcore.Agent` from functional options; bakes in the provenance ledger and the fail-closed gate.
+- **`internal/core`** — `Config`, `Agent(cfg)` builder, `Once` model adapter, `Stream` capture, audit middleware (enforcement), memory `ContextManager` wiring, skill block/tool helpers, `runState`, `memResolver`. Imported by root `jess` and `subagent`; never by callers.
+- **`ledger/`** — agentcore-free provenance ledger. `Event` (ULID `EventID`, `RunID`, `CallID`, typed `Ref`/`RefSource`, `Kind` set incl. `KindRequest`/`KindRetrieved`/`KindAction`/`KindToolResult`/`KindGateDecision`/`KindAbort`/`KindRunEnd`), `Sink`, `DurableSink` (`CommitAction`), `DiscardSink`, `JSONLSink`, `SQLite` (pure-Go modernc, implements `DurableSink`+`Reader`), `Chain`/`Action`, `AssembleChain`, `Reader`, `Resolver`. See Provenance + enforcement below.
+- **`gate/`** — fail-closed tool gate. `SafeTool` marker, `Approver` func, `Policy`, `New(Policy) agentcore.ToolGate`, `AllowAll()`. Non-safe tools with no approver are denied; denied attempts are recorded as `KindAction(denied)` so they stay visible in the ledger chain.
 - **`memory/`** — agentcore-free read/write/inject pipeline (see below). Portability insurance: stays importable without pulling in agentcore.
 - **`skill/`** — agentcore-free capability bundles (see below). Same portability guarantee.
 - **`subagent/`** — bounded `Pool` for fan-out subagents. Each subagent is a `*agentcore.Agent` built via `internal/core`.
 
-### memory/ — the read/write/inject pipeline
+### Provenance ledger + enforcement model
+
+The ledger (`ledger/`) is the detective control for remote operation. Every run produces a chain of three kinds of records: the request (what triggered the run), the available context (memory recalled and safe tool results), and the actions (effectful calls with embedded rationale). This "request/retrieved/action" triad means reading a chain backward answers "why did the agent do X?" without needing separate documentation.
+
+**Sinks.** `Sink` is the basic write interface (`Record`). `DurableSink` adds `CommitAction`, which only returns nil once the event is persisted. `SQLite` (pure-Go via modernc, no CGO) implements both `DurableSink` and `Reader`. `JSONLSink` and `DiscardSink` implement `Sink` only: they are observation-only and cannot authorize actions. Turning audit off is explicit: pass `ledger.DiscardSink{}` to `WithLedger`; the ledger is never silently absent.
+
+**Enforcement ("no durable record, no action").** The audit middleware in `internal/core` runs for every tool call, gate-independently. Before calling any tool not explicitly marked `gate.SafeTool`, it: (a) checks that the sink is a `DurableSink`; (b) builds a self-explaining `KindAction` event carrying `RunID`, `CallID`, `Tool`, `Args`, and `Refs` back to the triggering request; (c) calls `CommitAction`, which validates the event is fully populated before persisting. If any step fails, the tool does not run. A permissive gate (`AllowAll`) cannot bypass this: the record happens in the middleware, after the gate decision. Tools without a `SafeTool` marker are non-safe by default (fail-safe: an unclassified or externally-injected tool cannot run unaudited). The gate itself records denied non-safe attempts as `KindAction(denied)` so blocked/rogue attempts are visible in the chain, not silently dropped.
+
+**RunID.** Flows via a per-agent `runState` (not `context.Context`). `runState.begin` / `runState.end` bracket each `Stream` call. The gate and middleware capture `*runState` at build time and read it under a lock per call. `WithLedger(sink)` overrides the default; the default is a durable SQLite ledger at `os.UserCacheDir()/jess/ledger.db`.
+
+**Chain assembly.** `AssembleChain([]Event)` pairs `KindAction` and `KindToolResult` events by `CallID`, groups `KindRetrieved` refs as available context, and populates the `Chain.Request`. Safe-tool results (no matching action) land in `Chain.Available`. `SQLite.Chain(runID)` does this query-backed, never a full scan.
+
+**Drift detection.** `Ref` carries `{Source, ID, Hash}`: a content hash captured at decision time. `ledger.Resolver` provides `CurrentHash(source, id)` to check whether the referenced item still matches. `memResolver` in `internal/core` adapts `memory.EntryGetter` to `Resolver`.
+
+**What is deferred.** Evidence citation (linking actions to the specific available items that justified them beyond the request ref), forward retrieval of actions by evidence, pattern mining across runs, and the ambient agent are all out of scope for this release.
 
 Three layers cooperate; understanding their division of labor is the key to the package:
 

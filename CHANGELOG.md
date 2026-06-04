@@ -9,6 +9,17 @@ what the rules become at v1.
 
 ## Unreleased
 
+### Added (feat/provenance-ledger — ADR 0003)
+- **`jess/ledger`** replaces `jess/audit`. Structured provenance ledger keyed on ULID `EventID`. `Event` gains `RunID`, `CallID`, `Refs` (typed `Ref{Source,ID,Hash}`), and `Kind` constants `KindRequest`, `KindRetrieved`, `KindAction` alongside the prior observation kinds.
+- `DurableSink` interface (`CommitAction`) splits the write contract: observation sinks (`JSONLSink`, `DiscardSink`) cannot authorize actions; `SQLite` (pure-Go via `modernc.org/sqlite`, no CGO) implements both `DurableSink` and `Reader`.
+- `Chain`/`Action`/`AssembleChain`: the request/retrieved/action triad. `SQLite.Chain(runID)` reconstructs a run's provenance via an index-backed query; `AssembleChain` pairs actions and results by `CallID`.
+- Enforcement ("no durable record, no action"): the audit middleware in `internal/core` commits a self-explaining `KindAction` before any non-safe tool runs; if the sink is not a `DurableSink` or `CommitAction` fails, the tool is denied. Gate-independent: `AllowAll` cannot bypass it.
+- Gate records denied non-safe attempts as `KindAction(denied)` so blocked calls are chain-visible.
+- `runState` in `internal/core`: per-agent run id + request context carried across the gate, middleware, and context manager without `context.Context`.
+- `ledger.Resolver` + `memResolver` adapter for content-hash drift detection on `Ref` items.
+- `jess.WithLedger(sink)` replaces `jess.WithAudit`. Default ledger is durable SQLite at `os.UserCacheDir()/jess/ledger.db`; falls back to `DiscardSink` (safe: non-safe actions denied) if the file cannot be opened.
+- ADR 0003 added at `docs/adr/0003-provenance-ledger.md`.
+
 ### Changed (refactor/jess-simplify — ADR 0002)
 - **Breaking:** agentcore is now a direct, exposed dependency. `jess.New` returns `*agentcore.Agent`; `jess.Stream` takes `*agentcore.Agent`. No parallel type universe.
 - **Breaking:** deleted packages `jess/tool`, `jess/message`, `jess/model`, `jess/event`. Use agentcore's types directly (`ac.Tool`, `ac.Message`, `ac.LLMResponse`, `ac.Event`).
