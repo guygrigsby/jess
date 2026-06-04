@@ -8,7 +8,7 @@ import (
 	"github.com/guygrigsby/jess/skill"
 )
 
-// fakeTool is a minimal tool.Tool for exercising skillTools.
+// fakeTool is a minimal tool.Tool for exercising SkillTools.
 type fakeTool struct{ name string }
 
 func (f fakeTool) Name() string                                                      { return f.name }
@@ -59,7 +59,7 @@ func TestSkillSystemBlocks(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := skill.NewSet()
 			mustAddAll(t, s, tt.skills...)
-			blocks := skillSystemBlocks(s)
+			blocks := SkillBlocks(s)
 			if len(blocks) != tt.wantBlocks {
 				t.Fatalf("blocks = %d, want %d", len(blocks), tt.wantBlocks)
 			}
@@ -101,7 +101,7 @@ func TestSkillTools(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			s := skill.NewSet()
 			mustAddAll(t, s, tt.skills...)
-			tools := skillTools(s)
+			tools := SkillTools(s)
 			if len(tools) != len(tt.wantNames) {
 				t.Fatalf("got %d tools, want %d", len(tools), len(tt.wantNames))
 			}
