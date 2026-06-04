@@ -32,7 +32,10 @@ func (s *JSONLSink) Record(ev Event) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, err := s.w.Write(append(b, '\n')); err != nil {
+	if _, err := s.w.Write(b); err != nil {
+		return err
+	}
+	if err := s.w.WriteByte('\n'); err != nil {
 		return err
 	}
 	return s.w.Flush()

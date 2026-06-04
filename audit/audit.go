@@ -27,9 +27,9 @@ const (
 type Verdict string
 
 const (
-	VerdictAllowed      Verdict = "allowed"
-	VerdictDenied       Verdict = "denied"
-	VerdictNeedApproval Verdict = "needs_approval"
+	VerdictAllowed       Verdict = "allowed"
+	VerdictDenied        Verdict = "denied"
+	VerdictNeedsApproval Verdict = "needs_approval"
 )
 
 // Event is one recorded action. Fields are populated per Kind; zero values are
