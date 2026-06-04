@@ -21,6 +21,11 @@ type agentMeta struct {
 
 var agentRegistry sync.Map // map[*ac.Agent]agentMeta
 
+// ReleaseAgent removes a from the internal audit registry. Call it when an
+// agent is permanently done (e.g. a pool discarding a per-job agent) to avoid
+// unbounded growth. Safe to call more than once.
+func ReleaseAgent(a *ac.Agent) { agentRegistry.Delete(a) }
+
 func sinkFor(a *ac.Agent) audit.Sink {
 	if v, ok := agentRegistry.Load(a); ok {
 		return v.(agentMeta).sink
@@ -55,6 +60,9 @@ type Config struct {
 // always installed (a nil sink becomes DiscardSink), so every tool execution is
 // recorded unless audit is explicitly discarded.
 func Agent(cfg Config) *ac.Agent {
+	if cfg.Model == nil {
+		panic("core.Agent: Config.Model is required (set jess.WithModel)")
+	}
 	if cfg.Audit == nil {
 		cfg.Audit = audit.DiscardSink{}
 	}

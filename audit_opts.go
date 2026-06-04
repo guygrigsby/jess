@@ -3,6 +3,7 @@ package jess
 import (
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/guygrigsby/jess/audit"
 	"github.com/guygrigsby/jess/internal/core"
@@ -14,20 +15,30 @@ func WithAudit(sink audit.Sink) Option {
 	return func(c *core.Config, _ *newState) { c.Audit = sink }
 }
 
-// defaultAudit opens a durable JSONL sink under the user cache dir. Falls back
-// to Discard only if the path cannot be opened (audit must never block the run).
+var (
+	defaultSinkOnce sync.Once
+	defaultSinkVal  audit.Sink
+)
+
+// defaultAudit returns the process-wide default JSONL audit sink under the user
+// cache dir. Using a singleton prevents two jess.New() calls without WithAudit
+// from opening separate file descriptors and interleaving writes to the same
+// file. Falls back to DiscardSink if the path cannot be opened.
 func defaultAudit() audit.Sink {
-	dir, err := os.UserCacheDir()
-	if err != nil {
-		return audit.DiscardSink{}
-	}
-	d := filepath.Join(dir, "jess")
-	if err := os.MkdirAll(d, 0o700); err != nil {
-		return audit.DiscardSink{}
-	}
-	s, err := audit.NewJSONLSink(filepath.Join(d, "audit.jsonl"))
-	if err != nil {
-		return audit.DiscardSink{}
-	}
-	return s
+	defaultSinkOnce.Do(func() {
+		dir, err := os.UserCacheDir()
+		if err != nil {
+			defaultSinkVal = audit.DiscardSink{}
+			return
+		}
+		d := filepath.Join(dir, "jess")
+		_ = os.MkdirAll(d, 0o700)
+		s, err := audit.NewJSONLSink(filepath.Join(d, "audit.jsonl"))
+		if err != nil {
+			defaultSinkVal = audit.DiscardSink{}
+			return
+		}
+		defaultSinkVal = s
+	})
+	return defaultSinkVal
 }

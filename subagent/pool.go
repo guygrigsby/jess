@@ -224,11 +224,17 @@ func (p *Pool) runJob(j *job) {
 	}
 
 	agent := core.Agent(j.spec.config(p.base))
+	defer core.ReleaseAgent(agent) // pool agents are single-use; free from registry when done
 	ch, wait := core.Stream(runCtx, agent, j.input)
 
 	// Forward this run's events onto the destination stream, tagged with the
 	// job's path (prepended so any nested path is preserved). Jobs submitted via
 	// SubmitTo use a caller-provided sink; others use the merged pool stream.
+	//
+	// Known limitation: nested subagent events are tagged with the immediate
+	// job's path only — not composed across pool-nesting levels — because
+	// agentcore.Event carries no path field. To be revisited if pool nesting
+	// becomes a first-class use case.
 	dst := p.stream
 	if j.sink != nil {
 		dst = j.sink

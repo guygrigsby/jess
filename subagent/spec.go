@@ -48,6 +48,9 @@ func (s Spec) config(base core.Config) core.Config {
 		cfg.Model = base.Model
 	}
 	if cfg.Gate == nil {
+		// Inherit the pool owner's gate. Known limitation: an inherited gate's
+		// audit records attribute to the pool owner's AgentID, not the
+		// subagent's. To be revisited if per-subagent gate attribution matters.
 		cfg.Gate = base.Gate
 	}
 	if cfg.Audit == nil {

@@ -16,6 +16,9 @@ import (
 // audit sink, which Agent registered at build time; tool-level audit is already
 // covered by the middleware and gate. A nil/unknown sink degrades to no
 // run-level audit, never to no run.
+//
+// Only one active Stream per agent at a time; a second concurrent call races
+// the first run's events.
 func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event, func() *ac.RunSummary) {
 	sink := sinkFor(agent)
 	path := pathFor(agent)
