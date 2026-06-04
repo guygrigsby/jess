@@ -60,6 +60,29 @@ func TestUnsafeToolDeniedWhenNoApprover(t *testing.T) {
 	}
 }
 
+func TestDeniedNonSafeRecordsKindAction(t *testing.T) {
+	rs := &recSink{}
+	g := New(Policy{
+		Audit:      rs,
+		RunID:      func() string { return "run1" },
+		RequestRef: func() ledger.Ref { return ledger.Ref{Source: ledger.RefTool, ID: "req1"} },
+		// no approver => non-safe denied (fail-closed default)
+	})
+	d, _ := g(context.Background(), req(dangerTool{}))
+	if d == nil || d.Allowed {
+		t.Fatal("non-safe with no approver must be denied")
+	}
+	var sawDeniedAction bool
+	for _, e := range rs.events {
+		if e.Kind == ledger.KindAction && e.Verdict == ledger.VerdictDenied && e.RunID == "run1" {
+			sawDeniedAction = true
+		}
+	}
+	if !sawDeniedAction {
+		t.Fatalf("denied non-safe attempt must land in the chain as a KindAction(denied): %+v", rs.events)
+	}
+}
+
 func TestApproverRoutesUnsafe(t *testing.T) {
 	rs := &recSink{}
 	approved := Approver(func(context.Context, Request) (bool, string) { return true, "ok" })

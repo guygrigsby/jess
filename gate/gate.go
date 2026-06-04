@@ -31,6 +31,42 @@ type Policy struct {
 	Approver  Approver
 	Audit     ledger.Sink
 	AgentPath string
+
+	// RunID and RequestRef tie a denied non-safe attempt to its run and request
+	// for the recordDeniedAction chain entry. Both are nil-safe: when unset the
+	// recorded Event simply omits the run id and the request ref. Wired by the
+	// audit middleware (Task 9/10); the gate itself works without them.
+	RunID      func() string
+	RequestRef func() ledger.Ref
+}
+
+// recordDeniedAction writes a best-effort KindAction(denied) for a non-safe call
+// the gate refused. agentcore short-circuits a gate denial before the audit
+// middleware runs, so without this a denied or rogue attempt would never reach
+// the chain. Best-effort: the action did not execute, so there is nothing
+// dangerous to fail-close on if the record fails.
+func (p Policy) recordDeniedAction(gr ac.GateRequest, reason string) {
+	if p.Audit == nil {
+		return
+	}
+	runID, ref := "", ledger.Ref{}
+	if p.RunID != nil {
+		runID = p.RunID()
+	}
+	if p.RequestRef != nil {
+		ref = p.RequestRef()
+	}
+	_ = p.Audit.Record(ledger.Event{
+		EventID: ledger.NewEventID(),
+		RunID:   runID,
+		CallID:  gr.Call.ID,
+		Kind:    ledger.KindAction,
+		Tool:    gr.Call.Name,
+		Args:    gr.Call.Args,
+		Verdict: ledger.VerdictDenied,
+		Reason:  reason,
+		Refs:    []ledger.Ref{ref},
+	})
 }
 
 // New builds an agentcore.ToolGate from the policy.
@@ -60,6 +96,7 @@ func New(p Policy) ac.ToolGate {
 		}
 		if p.Approver == nil {
 			rec(ledger.VerdictDenied, "no approver; fail-closed")
+			p.recordDeniedAction(gr, "no approver; fail-closed")
 			return &ac.GateDecision{Allowed: false, Reason: "denied: no approver configured for non-safe tool"}, nil
 		}
 		allow, reason := p.Approver(ctx, Request{
@@ -70,6 +107,7 @@ func New(p Policy) ac.ToolGate {
 			return &ac.GateDecision{Allowed: true}, nil
 		}
 		rec(ledger.VerdictDenied, reason)
+		p.recordDeniedAction(gr, reason)
 		return &ac.GateDecision{Allowed: false, Reason: "denied by approver: " + reason}, nil
 	}
 }
