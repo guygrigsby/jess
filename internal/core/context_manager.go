@@ -2,10 +2,14 @@ package core
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"strings"
+	"time"
 
 	ac "github.com/voocel/agentcore"
 
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/memory"
 )
 
@@ -37,6 +41,12 @@ type ContextManager struct {
 	header   string
 	kinds    *memory.KindRegistry
 
+	// audit + rs let Project record a KindRetrieved provenance event for each
+	// injected entry (by ref, with the text hash). Both may be nil; recording is
+	// always best-effort and never blocks the LLM call.
+	audit ledger.Sink
+	rs    *runState
+
 	inner ac.ContextManager
 }
 
@@ -61,6 +71,15 @@ type ContextManagerOptions struct {
 	// which Kinds bypass recall (AlwaysInclude=true) and how many entries of
 	// each Kind to inject per turn.
 	Kinds *memory.KindRegistry
+
+	// Audit is the provenance sink. When set, Project records one KindRetrieved
+	// event per turn referencing every injected memory entry (by id + text hash).
+	// nil disables retrieval provenance. Recording is best-effort.
+	Audit ledger.Sink
+
+	// RunState supplies the current RunID so a KindRetrieved event correlates with
+	// the run that injected the memory. nil yields an empty RunID.
+	RunState *runState
 }
 
 // NewContextManager wires a Store + Recaller behind an agentcore.ContextManager.
@@ -77,6 +96,8 @@ func NewContextManager(store memory.Store, recaller memory.Recaller, opts Contex
 		maxItems: opts.MaxItems,
 		header:   opts.Header,
 		kinds:    opts.Kinds,
+		audit:    opts.Audit,
+		rs:       opts.RunState,
 		inner:    opts.Inner,
 	}
 	if cm.maxItems == 0 {
@@ -116,6 +137,8 @@ func (m *ContextManager) Project(ctx context.Context, msgs []ac.AgentMessage) (a
 	if len(core) == 0 && len(relevant) == 0 {
 		return proj, nil
 	}
+
+	m.recordRetrieved(core, relevant)
 
 	memMsg := m.formatLayered(core, relevant)
 	proj.Messages = append([]ac.AgentMessage{memMsg}, proj.Messages...)
@@ -184,6 +207,48 @@ func (m *ContextManager) Sync(msgs []ac.AgentMessage) { m.inner.Sync(msgs) }
 func (m *ContextManager) Usage() *ac.ContextUsage { return m.inner.Usage() }
 
 func (m *ContextManager) Snapshot() *ac.ContextSnapshot { return m.inner.Snapshot() }
+
+// recordRetrieved emits one best-effort KindRetrieved provenance event for the
+// turn, with one Ref per injected entry (source=memory, id=entry id, hash of the
+// entry text so later drift or deletion is detectable). Recording never blocks
+// the LLM call: a nil audit sink, a nil runState, or a Record error all degrade
+// silently. The event ties injected memory to the run that consumed it, so "why
+// did the agent know X?" is answerable from the ledger.
+func (m *ContextManager) recordRetrieved(core, relevant []memory.Entry) {
+	if m.audit == nil {
+		return
+	}
+	refs := make([]ledger.Ref, 0, len(core)+len(relevant))
+	for _, group := range [][]memory.Entry{core, relevant} {
+		for _, e := range group {
+			refs = append(refs, ledger.Ref{
+				Source: ledger.RefMemory,
+				ID:     e.ID,
+				Hash:   sha256hex(e.Text),
+			})
+		}
+	}
+	if len(refs) == 0 {
+		return
+	}
+	var runID string
+	if m.rs != nil {
+		runID = m.rs.runID()
+	}
+	_ = m.audit.Record(ledger.Event{
+		EventID: ledger.NewEventID(),
+		RunID:   runID,
+		Time:    time.Now(),
+		Kind:    ledger.KindRetrieved,
+		Refs:    refs,
+	})
+}
+
+// sha256hex returns the lowercase hex sha256 of s.
+func sha256hex(s string) string {
+	sum := sha256.Sum256([]byte(s))
+	return hex.EncodeToString(sum[:])
+}
 
 // formatLayered builds the injected memory message with two sub-sections: CORE
 // (AlwaysInclude entries) and RELEVANT (recall results), each only emitted when

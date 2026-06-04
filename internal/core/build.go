@@ -5,6 +5,7 @@ import (
 
 	ac "github.com/voocel/agentcore"
 
+	"github.com/guygrigsby/jess/gate"
 	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/memory"
 	"github.com/guygrigsby/jess/skill"
@@ -99,19 +100,39 @@ func Agent(cfg Config) *ac.Agent {
 		opts = append(opts, ac.WithTools(tools...))
 	}
 
+	// Compute the non-safe tool set from every registered tool. A tool is safe
+	// only when it implements gate.SafeTool AND Safe() reports true; everything
+	// else (including tools that don't implement the marker) is non-safe and so
+	// requires a durable KindAction before it can run (enforced in the audit
+	// middleware, gate-independently).
+	nonSafe := map[string]bool{}
+	for _, tl := range tools {
+		safe := false
+		if st, ok := tl.(gate.SafeTool); ok {
+			safe = st.Safe()
+		}
+		if !safe {
+			nonSafe[tl.Name()] = true
+		}
+	}
+
+	rs := &runState{}
 	if cfg.Store != nil && cfg.Recaller != nil {
 		opts = append(opts, ac.WithContextManager(
-			NewContextManager(cfg.Store, cfg.Recaller, ContextManagerOptions{AgentID: cfg.AgentID})))
+			NewContextManager(cfg.Store, cfg.Recaller, ContextManagerOptions{
+				AgentID:  cfg.AgentID,
+				Audit:    cfg.Audit,
+				RunState: rs,
+			})))
 	}
 	if cfg.Gate != nil {
 		opts = append(opts, ac.WithToolGate(cfg.Gate))
 	}
-	opts = append(opts, ac.WithMiddlewares(auditMiddleware(cfg.Audit, cfg.AgentID)))
+	opts = append(opts, ac.WithMiddlewares(auditMiddleware(cfg.Audit, nonSafe, rs, cfg.AgentID)))
 	if cfg.MaxTurns > 0 {
 		opts = append(opts, ac.WithMaxTurns(cfg.MaxTurns))
 	}
 	opts = append(opts, cfg.Extra...)
-	rs := &runState{}
 	a := ac.NewAgent(opts...)
 	agentRegistry.Store(a, agentMeta{sink: cfg.Audit, path: cfg.AgentID, rs: rs})
 	return a

@@ -4,14 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"testing"
 	"time"
 
 	ac "github.com/voocel/agentcore"
 
 	"github.com/guygrigsby/jess"
-	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/gate"
+	"github.com/guygrigsby/jess/ledger"
 )
 
 // restartTool wants to restart a service; NOT marked Safe -> must be gated.
@@ -82,8 +83,16 @@ func TestFailClosedBlocksUnsafeToolWhenNoApprover(t *testing.T) {
 }
 
 // TestWithApproverAllowsUnsafeTool proves that an approver returning allow=true
-// lets the tool through and Execute runs.
+// lets the tool through and Execute runs. The ledger must be durable: the audit
+// middleware enforces "no record, no action" for non-safe tools regardless of
+// the gate, so a SQLite (DurableSink) ledger is required for the tool to run.
 func TestWithApproverAllowsUnsafeTool(t *testing.T) {
+	led, err := ledger.OpenSQLite(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	defer func() { _ = led.Close() }()
+
 	rt := &restartTool{}
 	approver := gate.Approver(func(_ context.Context, _ gate.Request) (bool, string) {
 		return true, "approved in test"
@@ -92,7 +101,7 @@ func TestWithApproverAllowsUnsafeTool(t *testing.T) {
 		jess.WithModel(callOnceModel("restart_service")),
 		jess.WithTools(rt),
 		jess.WithApprover(approver),
-		jess.WithLedger(ledger.DiscardSink{}),
+		jess.WithLedger(led),
 	)
 
 	ch, wait := jess.Stream(context.Background(), agent, "restart nginx")
@@ -102,5 +111,30 @@ func TestWithApproverAllowsUnsafeTool(t *testing.T) {
 
 	if !rt.ran {
 		t.Fatal("approver returned allow=true but tool did not run")
+	}
+}
+
+// TestApproverAllowsButNonDurableLedgerDenies proves the gate-independent
+// enforcement: even with an approver returning allow=true, a non-safe tool
+// cannot run when the ledger is not durable. No durable record, no action.
+func TestApproverAllowsButNonDurableLedgerDenies(t *testing.T) {
+	rt := &restartTool{}
+	approver := gate.Approver(func(_ context.Context, _ gate.Request) (bool, string) {
+		return true, "approved in test"
+	})
+	agent := jess.New(
+		jess.WithModel(callOnceModel("restart_service")),
+		jess.WithTools(rt),
+		jess.WithApprover(approver),
+		jess.WithLedger(ledger.DiscardSink{}), // not a DurableSink
+	)
+
+	ch, wait := jess.Stream(context.Background(), agent, "restart nginx")
+	for range ch {
+	}
+	_ = wait()
+
+	if rt.ran {
+		t.Fatal("non-safe tool ran with a non-durable ledger; enforcement bypassed")
 	}
 }
