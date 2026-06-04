@@ -145,9 +145,11 @@ func TestChainReconstructsTriad(t *testing.T) {
 		t.Error("action Evidence is empty; no embedded 'why'")
 	}
 
-	// Available may be empty if SimpleRecaller found no overlap with the hint.
-	// That is acceptable; the spec says focus on Request+Action+Evidence.
-	t.Logf("chain.Available len=%d (may be 0 — SimpleRecaller lexical match not guaranteed)", len(chain.Available))
+	// The seeded KindUser memory is injected every turn (AlwaysInclude) and
+	// recorded as KindRetrieved, so it must appear in Available.
+	if len(chain.Available) == 0 {
+		t.Fatal("expected recalled memory in Available")
+	}
 }
 
 // --- Test 2: store-direct ---

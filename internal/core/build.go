@@ -155,11 +155,16 @@ func Agent(cfg Config) *ac.Agent {
 	if g != nil {
 		opts = append(opts, ac.WithToolGate(g))
 	}
-	opts = append(opts, ac.WithMiddlewares(auditMiddleware(cfg.Audit, safe, rs, cfg.AgentID)))
 	if cfg.MaxTurns > 0 {
 		opts = append(opts, ac.WithMaxTurns(cfg.MaxTurns))
 	}
 	opts = append(opts, cfg.Extra...)
+	// IMPORTANT: audit middleware must be appended LAST. ac.WithMiddlewares
+	// REPLACES a.middlewares (it does not append), so any WithMiddlewares in
+	// cfg.Extra would clobber a middleware appended before it. By appending
+	// the audit middleware after cfg.Extra, jess always owns the final
+	// middleware chain and the enforcement cannot be overridden.
+	opts = append(opts, ac.WithMiddlewares(auditMiddleware(cfg.Audit, safe, rs, cfg.AgentID)))
 	a := ac.NewAgent(opts...)
 	agentRegistry.Store(a, agentMeta{sink: cfg.Audit, path: cfg.AgentID, rs: rs})
 	return a

@@ -74,7 +74,7 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		}
 	})
 
-	rec(ledger.Event{Kind: ledger.KindPrompt, RunID: runID, Preview: input})
+	rec(ledger.Event{EventID: ledger.NewEventID(), Kind: ledger.KindPrompt, RunID: runID, Preview: input})
 
 	go func() {
 		defer close(done)
@@ -91,7 +91,7 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		// after WaitForIdle. So start the prompt, then wait for idle on a
 		// goroutine and race it against ctx cancellation (the kill switch).
 		if err := agent.Prompt(input); err != nil {
-			ev := ledger.Event{Kind: ledger.KindRunEnd, RunID: runID, Err: err.Error()}
+			ev := ledger.Event{EventID: ledger.NewEventID(), Kind: ledger.KindRunEnd, RunID: runID, Err: err.Error()}
 			rec(ev)
 			return
 		}
@@ -108,10 +108,10 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		}
 
 		if aborted {
-			rec(ledger.Event{Kind: ledger.KindAbort, RunID: runID, Reason: ctx.Err().Error()})
+			rec(ledger.Event{EventID: ledger.NewEventID(), Kind: ledger.KindAbort, RunID: runID, Reason: ctx.Err().Error()})
 			return
 		}
-		ev := ledger.Event{Kind: ledger.KindRunEnd, RunID: runID}
+		ev := ledger.Event{EventID: ledger.NewEventID(), Kind: ledger.KindRunEnd, RunID: runID}
 		if s := summary.Load(); s != nil {
 			ev.Reason = string(s.EndReason)
 		}

@@ -80,6 +80,12 @@ func WithMaxTurns(n int) Option {
 
 // WithAgentcoreOptions passes raw agentcore options through (the long tail:
 // stop guard, extra middlewares, concurrency).
+//
+// WARNING: passing ac.WithMiddlewares here does NOT install custom tool
+// middleware alongside jess's audit enforcement — it will be overridden.
+// jess appends the audit-enforcement middleware last (after all Extra options)
+// so that "no durable record, no action" cannot be bypassed. Custom tool
+// middleware is not supported through this escape hatch.
 func WithAgentcoreOptions(o ...ac.AgentOption) Option {
 	return func(c *core.Config, _ *newState) { c.Extra = append(c.Extra, o...) }
 }
