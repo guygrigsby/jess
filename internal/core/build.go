@@ -10,13 +10,15 @@ import (
 	"github.com/guygrigsby/jess/skill"
 )
 
-// agentMeta carries the run-level wiring (audit sink + agent path) that Stream
-// needs but that agentcore.Agent does not expose. Agent registers it keyed by
-// the *ac.Agent pointer so jess.Stream can recover it without changing the
-// public signature (New returns the bare *ac.Agent by design).
+// agentMeta carries the run-level wiring (audit sink, agent path, and the
+// per-agent runState) that Stream needs but that agentcore.Agent does not
+// expose. Agent registers it keyed by the *ac.Agent pointer so jess.Stream
+// can recover it without changing the public signature (New returns the bare
+// *ac.Agent by design).
 type agentMeta struct {
 	sink ledger.Sink
 	path string
+	rs   *runState
 }
 
 var agentRegistry sync.Map // map[*ac.Agent]agentMeta
@@ -38,6 +40,13 @@ func pathFor(a *ac.Agent) string {
 		return v.(agentMeta).path
 	}
 	return ""
+}
+
+func runStateFor(a *ac.Agent) *runState {
+	if v, ok := agentRegistry.Load(a); ok {
+		return v.(agentMeta).rs
+	}
+	return nil
 }
 
 // Config is the assembled jess agent configuration, vendor-visible (agentcore
@@ -102,7 +111,8 @@ func Agent(cfg Config) *ac.Agent {
 		opts = append(opts, ac.WithMaxTurns(cfg.MaxTurns))
 	}
 	opts = append(opts, cfg.Extra...)
+	rs := &runState{}
 	a := ac.NewAgent(opts...)
-	agentRegistry.Store(a, agentMeta{sink: cfg.Audit, path: cfg.AgentID})
+	agentRegistry.Store(a, agentMeta{sink: cfg.Audit, path: cfg.AgentID, rs: rs})
 	return a
 }

@@ -59,3 +59,44 @@ func TestBuildAndStreamAuditsToolAndRun(t *testing.T) {
 		t.Fatalf("run_end not audited: %+v", rs.snapshot())
 	}
 }
+
+// TestStreamRecordsRequestHeadAndRunEnd verifies that Stream emits a
+// KindRequest event whose RunID matches the KindRunEnd RunID, and that both
+// are non-empty, giving every ledger entry a correlated run identifier.
+func TestStreamRecordsRequestHeadAndRunEnd(t *testing.T) {
+	sink := &recSink{}
+	echo := Once(false, func(_ context.Context, _ []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
+		return &ac.LLMResponse{Message: ac.Message{
+			Role:    ac.RoleAssistant,
+			Content: []ac.ContentBlock{ac.TextBlock("ack")},
+		}}, nil
+	})
+	ag := Agent(Config{
+		Model: echo,
+		Audit: sink,
+	})
+	ch, wait := Stream(context.Background(), ag, "restart nginx")
+	for range ch {
+	}
+	wait()
+
+	events := sink.snapshot()
+	var reqRunID, endRunID string
+	for _, e := range events {
+		switch e.Kind {
+		case ledger.KindRequest:
+			reqRunID = e.RunID
+		case ledger.KindRunEnd:
+			endRunID = e.RunID
+		}
+	}
+	if reqRunID == "" {
+		t.Fatalf("no KindRequest event recorded; events: %+v", events)
+	}
+	if endRunID == "" {
+		t.Fatalf("no KindRunEnd with RunID; events: %+v", events)
+	}
+	if reqRunID != endRunID {
+		t.Fatalf("RunID mismatch: KindRequest=%q KindRunEnd=%q", reqRunID, endRunID)
+	}
+}

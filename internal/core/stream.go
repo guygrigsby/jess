@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/json"
 	"sync/atomic"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event, func() *ac.RunSummary) {
 	sink := sinkFor(agent)
 	path := pathFor(agent)
+	rs := runStateFor(agent)
 	rec := func(ev ledger.Event) {
 		if sink != nil {
 			ev.Time = time.Now()
@@ -30,9 +32,37 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		}
 	}
 
+	// Mint the run and request ids before touching the agent so the ledger
+	// entries use consistent ids across all recorded events for this run.
+	reqID := ledger.NewEventID()
+	runID := ledger.NewEventID().String()
+
 	out := make(chan ac.Event, 64)
 	var summary atomic.Pointer[ac.RunSummary]
 	done := make(chan struct{})
+
+	// Enforce the one-active-run-per-agent invariant. A second concurrent
+	// Stream call would race the first run's events; fail it explicitly.
+	if rs != nil {
+		if err := rs.begin(runID, reqID, input); err != nil {
+			go func() {
+				defer close(done)
+				defer close(out)
+				out <- ac.Event{} // unblock any select on the channel
+				rec(ledger.Event{Kind: ledger.KindRunEnd, RunID: runID, Err: err.Error()})
+			}()
+			return out, func() *ac.RunSummary { <-done; return nil }
+		}
+	}
+
+	// Best-effort: record the request head before the model touches input.
+	argsJSON, _ := json.Marshal(input)
+	rec(ledger.Event{
+		EventID: reqID,
+		RunID:   runID,
+		Kind:    ledger.KindRequest,
+		Args:    argsJSON,
+	})
 
 	unsub := agent.Subscribe(func(ev ac.Event) {
 		if ev.Summary != nil {
@@ -44,19 +74,24 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		}
 	})
 
-	rec(ledger.Event{Kind: ledger.KindPrompt, Preview: input})
+	rec(ledger.Event{Kind: ledger.KindPrompt, RunID: runID, Preview: input})
 
 	go func() {
 		defer close(done)
 		defer close(out)
 		defer unsub()
+		defer func() {
+			if rs != nil {
+				rs.end(runID)
+			}
+		}()
 
 		// agentcore's Prompt is asynchronous: it kicks off the run on a
 		// background goroutine and returns immediately. The run is finished only
 		// after WaitForIdle. So start the prompt, then wait for idle on a
 		// goroutine and race it against ctx cancellation (the kill switch).
 		if err := agent.Prompt(input); err != nil {
-			ev := ledger.Event{Kind: ledger.KindRunEnd, Err: err.Error()}
+			ev := ledger.Event{Kind: ledger.KindRunEnd, RunID: runID, Err: err.Error()}
 			rec(ev)
 			return
 		}
@@ -73,10 +108,10 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		}
 
 		if aborted {
-			rec(ledger.Event{Kind: ledger.KindAbort, Reason: ctx.Err().Error()})
+			rec(ledger.Event{Kind: ledger.KindAbort, RunID: runID, Reason: ctx.Err().Error()})
 			return
 		}
-		ev := ledger.Event{Kind: ledger.KindRunEnd}
+		ev := ledger.Event{Kind: ledger.KindRunEnd, RunID: runID}
 		if s := summary.Load(); s != nil {
 			ev.Reason = string(s.EndReason)
 		}
