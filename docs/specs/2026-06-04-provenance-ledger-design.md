@@ -70,8 +70,14 @@ ULID PK gives O(log n) ref resolution and time ordering for free; the `run_id` i
 
 ## Invariants
 
-- Ledger writes never block the run. A SQLite write failure is swallowed and the run continues (same rule memory already follows). Reader errors are returned to the caller; queries are off the run path.
-- A gate-denied action still lands in the chain with its denial. The rogue-attempt-visible guarantee carries from the flat log into the chain view.
+Auditability is a hard requirement, not best-effort, so the ledger is fail-closed for actions. This is the inverse of memory's "never block the LLM call" rule, and the distinction is deliberate: memory recall is an enhancement (losing it degrades), an action record is accountability (losing it means an unaudited action happened, the exact failure this design exists to prevent).
+
+- **Actions block on their record.** Before any effectful (non-safe) tool executes, its intent and gate decision must be durably committed to the ledger. If that commit fails, the action is denied, identical to a gate refusal. No record, no action. Enforcement point: the gate already runs before execution, so on "allow" for a non-safe tool it commits the record first and, if the commit fails, returns "deny" instead.
+- **Context is best-effort.** Memory recall and the available/retrieved records (recalled-memory refs, safe-tool read outputs, run-level prompt/run-end) may fail without blocking the run. A failure there loses chain completeness, not an unaudited action. This is the only place the old "never block" rule still applies.
+- **Outcomes are durable but cannot un-run.** The action's result is recorded after execution; if that write fails the action already ran, so it is an outcome-gap (logged and flagged), not an unaudited action, because the intent was committed before execution.
+- A gate-denied (or record-failed) action still lands in the chain with its denial where the denial itself is recordable. The rogue-attempt-visible guarantee carries from the flat log into the chain view.
+
+Cost note: the blocking commit is on the action path only, which is the slow, rare, dangerous path you want gated. A local SQLite commit is sub-millisecond, so the safe/read/context path stays unblocked and the action path pays a negligible, deliberate cost.
 
 ## Package and dependencies
 
@@ -83,6 +89,7 @@ ULID PK gives O(log n) ref resolution and time ordering for free; the `run_id` i
 - SQLite `Sink`+`Reader` round-trip: `Record` several events across two runs, then `Get` one by `EventID` and assert it matches, and `Chain(runID)` assembles only that run's events into the triad.
 - Integration through the real path: an agent that recalls a seeded memory, calls one safe read tool, then a non-safe (gated) action. Assert the reconstructed chain has the request as head, the recall + read in `Available` (by ref, hashes present), the action with its gate decision and result, and `Evidence = [request ref]`. A second case where the gate denies the action: assert the action still appears in the chain with a denied gate decision.
 - Hash-drift: capture a ref to a memory entry, supersede that entry, and assert the chain's ref hash no longer matches the live entry (drift is detectable).
+- Fail-closed ledger: wire a ledger whose action-record commit fails, then run an agent that calls a non-safe tool. Assert the tool did NOT execute and the gate returned a denial citing the record failure. This proves "no record, no action." Pair it with a safe-tool case where a context-record failure does NOT block (best-effort holds for reads).
 
 ## Deferred (designed, not built)
 
