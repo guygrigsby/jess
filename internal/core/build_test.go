@@ -7,26 +7,26 @@ import (
 
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/gate"
 )
 
 type recSink struct {
 	mu     sync.Mutex
-	events []audit.Event
+	events []ledger.Event
 }
 
-func (r *recSink) Record(e audit.Event) error {
+func (r *recSink) Record(e ledger.Event) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, e)
 	return nil
 }
 
-func (r *recSink) snapshot() []audit.Event {
+func (r *recSink) snapshot() []ledger.Event {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]audit.Event(nil), r.events...)
+	return append([]ledger.Event(nil), r.events...)
 }
 
 func TestBuildAndStreamAuditsToolAndRun(t *testing.T) {
@@ -51,7 +51,7 @@ func TestBuildAndStreamAuditsToolAndRun(t *testing.T) {
 	}
 	var sawRunEnd bool
 	for _, e := range rs.snapshot() {
-		if e.Kind == audit.KindRunEnd {
+		if e.Kind == ledger.KindRunEnd {
 			sawRunEnd = true
 		}
 	}

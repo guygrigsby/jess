@@ -5,7 +5,7 @@ import (
 
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/memory"
 	"github.com/guygrigsby/jess/skill"
 )
@@ -15,7 +15,7 @@ import (
 // the *ac.Agent pointer so jess.Stream can recover it without changing the
 // public signature (New returns the bare *ac.Agent by design).
 type agentMeta struct {
-	sink audit.Sink
+	sink ledger.Sink
 	path string
 }
 
@@ -26,7 +26,7 @@ var agentRegistry sync.Map // map[*ac.Agent]agentMeta
 // unbounded growth. Safe to call more than once.
 func ReleaseAgent(a *ac.Agent) { agentRegistry.Delete(a) }
 
-func sinkFor(a *ac.Agent) audit.Sink {
+func sinkFor(a *ac.Agent) ledger.Sink {
 	if v, ok := agentRegistry.Load(a); ok {
 		return v.(agentMeta).sink
 	}
@@ -52,7 +52,7 @@ type Config struct {
 	AgentID      string
 	MaxTurns     int
 	Gate         ac.ToolGate
-	Audit        audit.Sink
+	Audit        ledger.Sink
 	Extra        []ac.AgentOption // passthrough for the long tail
 }
 
@@ -64,7 +64,7 @@ func Agent(cfg Config) *ac.Agent {
 		panic("core.Agent: Config.Model is required (set jess.WithModel)")
 	}
 	if cfg.Audit == nil {
-		cfg.Audit = audit.DiscardSink{}
+		cfg.Audit = ledger.DiscardSink{}
 	}
 	opts := []ac.AgentOption{ac.WithModel(cfg.Model)}
 

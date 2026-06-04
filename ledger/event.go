@@ -1,9 +1,9 @@
-// Package audit is the durable, agentcore-free record of everything an agent
+// Package ledger is the durable, agentcore-free record of everything an agent
 // does. It is jess's detective control: over a remote channel the operator
-// loses the ability to watch output, so the audit log stands in. Tool requests
+// loses the ability to watch output, so the ledger stands in. Tool requests
 // are recorded even when the gate denies them, so blocked (possibly rogue)
 // attempts stay visible instead of vanishing.
-package audit
+package ledger
 
 import (
 	"encoding/json"
@@ -54,8 +54,8 @@ type Sink interface {
 	Record(Event) error
 }
 
-// DiscardSink drops every Event. Turning audit off is explicit (pass this to
-// jess.WithAudit), never silent.
+// DiscardSink drops every Event. Turning recording off is explicit (pass this to
+// jess.WithLedger), never silent.
 type DiscardSink struct{}
 
 // Record satisfies Sink.

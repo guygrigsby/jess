@@ -7,7 +7,7 @@ import (
 	ac "github.com/voocel/agentcore"
 
 	"github.com/guygrigsby/jess"
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/subagent"
 )
 
@@ -23,7 +23,7 @@ func TestWithSubagentsBuildsAgent(t *testing.T) {
 	})
 	agent := jess.New(
 		jess.WithModel(echo),
-		jess.WithAudit(audit.DiscardSink{}),
+		jess.WithLedger(ledger.DiscardSink{}),
 		jess.WithSubagents(subagent.Spec{Name: "research"}), // inherits parent model
 	)
 	if agent == nil {

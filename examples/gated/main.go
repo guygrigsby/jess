@@ -16,7 +16,7 @@ import (
 	ac "github.com/voocel/agentcore"
 
 	"github.com/guygrigsby/jess"
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/gate"
 )
 
@@ -86,7 +86,7 @@ func main() {
 		jess.WithModel(model),
 		jess.WithTools(restartTool{}),
 		jess.WithApprover(stdinApprover(stdin)),
-		jess.WithAudit(audit.DiscardSink{}),
+		jess.WithLedger(ledger.DiscardSink{}),
 	)
 
 	fmt.Println("Sending: restart nginx")

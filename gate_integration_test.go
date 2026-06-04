@@ -10,7 +10,7 @@ import (
 	ac "github.com/voocel/agentcore"
 
 	"github.com/guygrigsby/jess"
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/gate"
 )
 
@@ -67,7 +67,7 @@ func TestFailClosedBlocksUnsafeToolWhenNoApprover(t *testing.T) {
 	agent := jess.New(
 		jess.WithModel(callOnceModel("restart_service")),
 		jess.WithTools(rt),
-		jess.WithAudit(audit.DiscardSink{}),
+		jess.WithLedger(ledger.DiscardSink{}),
 		// no WithApprover -> fail-closed
 	)
 
@@ -92,7 +92,7 @@ func TestWithApproverAllowsUnsafeTool(t *testing.T) {
 		jess.WithModel(callOnceModel("restart_service")),
 		jess.WithTools(rt),
 		jess.WithApprover(approver),
-		jess.WithAudit(audit.DiscardSink{}),
+		jess.WithLedger(ledger.DiscardSink{}),
 	)
 
 	ch, wait := jess.Stream(context.Background(), agent, "restart nginx")

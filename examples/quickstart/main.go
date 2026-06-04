@@ -13,7 +13,7 @@ import (
 	ac "github.com/voocel/agentcore"
 
 	"github.com/guygrigsby/jess"
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/memory"
 )
 
@@ -51,7 +51,7 @@ func main() {
 		jess.WithModel(echo),
 		jess.WithAgentID("demo"),
 		jess.WithMemory(store, memory.NewSimpleRecaller()),
-		jess.WithAudit(audit.DiscardSink{}), // quiet for the demo
+		jess.WithLedger(ledger.DiscardSink{}), // quiet for the demo
 	)
 
 	// 4. Drive a run and observe its event channel.

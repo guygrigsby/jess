@@ -8,7 +8,7 @@ import (
 
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 )
 
 // SafeTool is the optional marker a tool implements to be auto-approved. Safe
@@ -29,7 +29,7 @@ type Approver func(ctx context.Context, r Request) (allow bool, reason string)
 // Policy configures the default gate.
 type Policy struct {
 	Approver  Approver
-	Audit     audit.Sink
+	Audit     ledger.Sink
 	AgentPath string
 }
 
@@ -40,11 +40,11 @@ func New(p Policy) ac.ToolGate {
 		if st, ok := gr.Tool.(SafeTool); ok {
 			safe = st.Safe()
 		}
-		rec := func(v audit.Verdict, reason string) {
+		rec := func(v ledger.Verdict, reason string) {
 			if p.Audit != nil {
-				_ = p.Audit.Record(audit.Event{
+				_ = p.Audit.Record(ledger.Event{
 					AgentPath: p.AgentPath,
-					Kind:      audit.KindGateDecision,
+					Kind:      ledger.KindGateDecision,
 					Tool:      gr.Call.Name,
 					Label:     gr.ToolLabel,
 					Preview:   string(gr.Preview),
@@ -55,21 +55,21 @@ func New(p Policy) ac.ToolGate {
 			}
 		}
 		if safe {
-			rec(audit.VerdictAllowed, "safe tool")
+			rec(ledger.VerdictAllowed, "safe tool")
 			return &ac.GateDecision{Allowed: true}, nil
 		}
 		if p.Approver == nil {
-			rec(audit.VerdictDenied, "no approver; fail-closed")
+			rec(ledger.VerdictDenied, "no approver; fail-closed")
 			return &ac.GateDecision{Allowed: false, Reason: "denied: no approver configured for non-safe tool"}, nil
 		}
 		allow, reason := p.Approver(ctx, Request{
 			Tool: gr.Call.Name, Label: gr.ToolLabel, Preview: string(gr.Preview), Args: gr.Call.Args,
 		})
 		if allow {
-			rec(audit.VerdictAllowed, reason)
+			rec(ledger.VerdictAllowed, reason)
 			return &ac.GateDecision{Allowed: true}, nil
 		}
-		rec(audit.VerdictDenied, reason)
+		rec(ledger.VerdictDenied, reason)
 		return &ac.GateDecision{Allowed: false, Reason: "denied by approver: " + reason}, nil
 	}
 }

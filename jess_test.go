@@ -7,7 +7,7 @@ import (
 	ac "github.com/voocel/agentcore"
 
 	"github.com/guygrigsby/jess"
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 )
 
 func TestNewAndStream(t *testing.T) {
@@ -17,7 +17,7 @@ func TestNewAndStream(t *testing.T) {
 			Content: []ac.ContentBlock{ac.TextBlock("hi")},
 		}}, nil
 	})
-	agent := jess.New(jess.WithModel(echo), jess.WithAudit(audit.DiscardSink{}))
+	agent := jess.New(jess.WithModel(echo), jess.WithLedger(ledger.DiscardSink{}))
 	ch, wait := jess.Stream(context.Background(), agent, "yo")
 	for range ch {
 	}

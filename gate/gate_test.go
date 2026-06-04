@@ -7,7 +7,7 @@ import (
 
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 )
 
 type safeTool struct{}
@@ -25,9 +25,9 @@ type dangerTool struct{ safeTool }
 func (dangerTool) Name() string { return "restart_service" }
 func (dangerTool) Safe() bool   { return false }
 
-type recSink struct{ events []audit.Event }
+type recSink struct{ events []ledger.Event }
 
-func (r *recSink) Record(e audit.Event) error { r.events = append(r.events, e); return nil }
+func (r *recSink) Record(e ledger.Event) error { r.events = append(r.events, e); return nil }
 
 func req(t ac.Tool) ac.GateRequest {
 	return ac.GateRequest{Tool: t, Call: ac.ToolCall{Name: t.Name()}}
@@ -51,7 +51,7 @@ func TestUnsafeToolDeniedWhenNoApprover(t *testing.T) {
 	}
 	var sawDenied bool
 	for _, e := range rs.events {
-		if e.Kind == audit.KindGateDecision && e.Verdict == audit.VerdictDenied {
+		if e.Kind == ledger.KindGateDecision && e.Verdict == ledger.VerdictDenied {
 			sawDenied = true
 		}
 	}

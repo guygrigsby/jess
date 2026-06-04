@@ -11,7 +11,7 @@ import (
 
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/internal/core"
 )
 
@@ -90,7 +90,7 @@ func WithMaxDepth(n int) Option { return func(c *poolConfig) { c.maxDepth = n } 
 // WithDefaults sets the parent defaults each Spec inherits when its
 // corresponding field is unset: the model, tool gate, audit sink, and agentID.
 // jess.New uses this so subagents share the parent agent's safety controls.
-func WithDefaults(model ac.ChatModel, gate ac.ToolGate, sink audit.Sink, agentID string) Option {
+func WithDefaults(model ac.ChatModel, gate ac.ToolGate, sink ledger.Sink, agentID string) Option {
 	return func(c *poolConfig) {
 		c.base = core.Config{Model: model, Gate: gate, Audit: sink, AgentID: agentID}
 	}

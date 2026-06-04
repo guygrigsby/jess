@@ -8,7 +8,7 @@ package subagent
 import (
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 	"github.com/guygrigsby/jess/internal/core"
 	"github.com/guygrigsby/jess/skill"
 )
@@ -27,7 +27,7 @@ type Spec struct {
 	// Gate and Audit are inherited from the Pool's base config when left nil, so
 	// subagents share the parent's safety controls by default.
 	Gate  ac.ToolGate
-	Audit audit.Sink
+	Audit ledger.Sink
 }
 
 // config maps a Spec to a core.Config, inheriting unset fields (Model, Gate,

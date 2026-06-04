@@ -7,7 +7,7 @@ import (
 
 	ac "github.com/voocel/agentcore"
 
-	"github.com/guygrigsby/jess/audit"
+	"github.com/guygrigsby/jess/ledger"
 )
 
 // Stream drives one prompt on agent and exposes its events as a channel plus a
@@ -22,7 +22,7 @@ import (
 func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event, func() *ac.RunSummary) {
 	sink := sinkFor(agent)
 	path := pathFor(agent)
-	rec := func(ev audit.Event) {
+	rec := func(ev ledger.Event) {
 		if sink != nil {
 			ev.Time = time.Now()
 			ev.AgentPath = path
@@ -44,7 +44,7 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		}
 	})
 
-	rec(audit.Event{Kind: audit.KindPrompt, Preview: input})
+	rec(ledger.Event{Kind: ledger.KindPrompt, Preview: input})
 
 	go func() {
 		defer close(done)
@@ -56,7 +56,7 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		// after WaitForIdle. So start the prompt, then wait for idle on a
 		// goroutine and race it against ctx cancellation (the kill switch).
 		if err := agent.Prompt(input); err != nil {
-			ev := audit.Event{Kind: audit.KindRunEnd, Err: err.Error()}
+			ev := ledger.Event{Kind: ledger.KindRunEnd, Err: err.Error()}
 			rec(ev)
 			return
 		}
@@ -73,10 +73,10 @@ func Stream(ctx context.Context, agent *ac.Agent, input string) (<-chan ac.Event
 		}
 
 		if aborted {
-			rec(audit.Event{Kind: audit.KindAbort, Reason: ctx.Err().Error()})
+			rec(ledger.Event{Kind: ledger.KindAbort, Reason: ctx.Err().Error()})
 			return
 		}
-		ev := audit.Event{Kind: audit.KindRunEnd}
+		ev := ledger.Event{Kind: ledger.KindRunEnd}
 		if s := summary.Load(); s != nil {
 			ev.Reason = string(s.EndReason)
 		}

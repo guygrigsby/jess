@@ -26,7 +26,7 @@ type newState struct {
 //
 // The gate is fail-closed by default: without an approver (or AllowAll), any
 // tool not marked Safe is denied. Audit is on by default (a durable JSONL sink
-// under the user cache dir); pass WithAudit(audit.DiscardSink{}) to turn it off
+// under the user cache dir); pass WithLedger(ledger.DiscardSink{}) to turn it off
 // explicitly.
 func New(opts ...Option) *ac.Agent {
 	cfg := core.Config{}
@@ -35,7 +35,7 @@ func New(opts ...Option) *ac.Agent {
 		o(&cfg, st)
 	}
 	if cfg.Audit == nil {
-		cfg.Audit = defaultAudit()
+		cfg.Audit = defaultLedger()
 	}
 	if cfg.Gate == nil {
 		if st.allowAll {
