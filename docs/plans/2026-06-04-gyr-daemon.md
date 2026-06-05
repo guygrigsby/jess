@@ -36,16 +36,17 @@
 
 **Files:** the whole new `gyr` repo.
 
-- [ ] **Step 1: Clone rookery and rename to gyr**
+- [ ] **Step 1: Clone rookery (git intact) and run init**
+
+`scripts/init.sh` uses `git ls-files` and `git mv`, so the clone's git MUST stay intact while it runs. Clone from the LOCAL rookery (offline, clean git):
 
 ```bash
 cd /Users/guygrigsby/projects
-git clone https://github.com/guygrigsby/rookery gyr 2>/dev/null || cp -R rookery gyr
+git clone ./rookery gyr
 cd gyr
-rm -rf .git && git init -q
 scripts/init.sh gyr --no-web
 ```
-`init.sh gyr --no-web` renames the `app`/`App`/`APP` tokens to `gyr`/`Gyr`/`GYR`, produces `cmd/gyrd` + `cmd/gyrctl`, and strips the web/SPA. Read `scripts/init.sh` output; if `init.sh` expects to run inside a fresh clone, follow its README.
+`init.sh gyr --no-web` rewrites the `app`/`appd`/`appctl`/`APP_`/module-path tokens to gyr, `git mv`s `cmd/appd`→`cmd/gyrd` and `cmd/appctl`→`cmd/gyrctl`, removes `web/`, and stubs `embed.go` headless. It does NOT fix the Makefile's web references (next step). It also runs `bd init` and `gofmt -w`.
 
 - [ ] **Step 2: Add jess + telegram dependencies**
 
@@ -64,16 +65,27 @@ cp ../jess/docs/specs/2026-06-04-gyr-daemon-design.md docs/specs/
 cp ../jess/docs/plans/2026-06-04-gyr-daemon.md docs/plans/
 ```
 
-- [ ] **Step 4: Confirm the scaffold builds and gates green**
+- [ ] **Step 4: Make the Makefile headless (drop web targets)**
 
-Run: `go build ./... && make check` (or `make lint && make test` if no `check` target).
-Expected: green (the bare scaffold). Fix any rename fallout.
+`--no-web` deleted `web/`, but `make check`/`test`/`build` still reference web targets and will fail. Edit the `Makefile`:
+- `build:` — change `build: web-build server-build ctl-build` to `build: server-build ctl-build`.
+- `test:` — change `test: server-test web-test` to `test: server-test` and remove the `bash scripts/init_smoke_test.sh` line (the init smoke test is template-only) OR keep it if it passes; verify.
+- `check:` — remove the final `$(MAKE) web-build` line so the gate is gofmt + vet + golangci-lint + `go test ./...` only.
+Also remove the now-dangling `web-dev`/`web-build`/`web-test`/`dev` targets and the `$(WEB_DIR)` bits if they reference the deleted `web/` (optional cleanup; at minimum `check`/`test`/`build` must not invoke web). `make check` is the gate for every later task.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Reset to a fresh git history and confirm green**
+
+```bash
+rm -rf .git && git init -q
+go build ./... && make check
+```
+Expected: `make check` green (the bare headless scaffold: gofmt clean, vet clean, lint clean if installed, `go test ./...` passes). Fix any rename/Makefile fallout. (Resetting git gives gyr its own clean initial history; the `git mv`s from init.sh already moved the files on disk.)
+
+- [ ] **Step 6: Commit**
 
 ```bash
 git add -A
-git commit -m "scaffold: gyr from rookery (--no-web); add jess + telegram deps"
+git commit -m "scaffold: gyr from rookery (--no-web, headless Makefile); add jess + telegram deps"
 ```
 
 ---
