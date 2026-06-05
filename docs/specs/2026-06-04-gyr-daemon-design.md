@@ -117,6 +117,10 @@ Cloud Claude via a litellm-backed `agentcore.ChatModel`. Note: the jess simplify
 - Integration: a fake Telegram update drives a fake model that calls `restart_service`; assert a confirm is sent, a tap approves, the action runs, and the ledger chain reconstructs the why.
 - The whole thing through rookery's `make check`.
 
+## No long-term memory in v1
+
+gyr v1 does NOT wire `jess.WithMemory`. It is reactive (you drive each request), so it needs no cross-request recall. jess/memory is unchanged and unused here. The reconception of memory (away from RAG recall, toward structured retrieval over the provenance ledger for a single user) is a separate post-gyr effort, not a gyr concern.
+
 ## Deferred to v2 (separate spec)
 
-The ambient/proactive layer: triggers beyond Telegram (watching logs, time, learned patterns), the surfacing threshold (act silently on the reversible, surface only the notable or the irreversible), and pattern-mining over the provenance ledger. v1 builds the reactive spine and the accountability the ambient layer will stand on.
+The ambient/proactive layer: triggers beyond Telegram (watching logs, time, learned patterns), the surfacing threshold (act silently on the reversible, surface only the notable or the irreversible), and pattern-mining over the provenance ledger. v1 builds the reactive spine and the accountability the ambient layer will stand on. The memory reconception (above) feeds the pattern-mining here.
