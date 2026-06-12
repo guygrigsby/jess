@@ -3,9 +3,11 @@
 *.test
 *.out
 /quickstart
+/gated
 # Anything in examples/*/ that's a bare-named build artifact. Each
 # example main package compiles to a binary named after its dir.
 /examples/*/quickstart
+/examples/*/gated
 /examples/*/main
 
 # Editor / OS scratch
