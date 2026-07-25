@@ -123,9 +123,16 @@ func NewContextManager(store memory.Store, recaller memory.Recaller, opts Contex
 //  3. Recall fills the remaining budget with relevance-scored entries from
 //     non-AlwaysInclude Kinds.
 //
-// The two memory blocks become ONE leading user message prepended to the
-// projection (CORE first, then RELEVANT, then conversation). Memory injection
-// never commits to the runtime baseline.
+// The two blocks are placed by how stable they are, because providers cache on a
+// byte prefix. CORE is the same every turn until a memory is added, so it leads
+// the projection and extends the cacheable prefix. RELEVANT is rescored against
+// the latest turn, so its bytes differ every turn: it goes LAST, after the
+// conversation, and the final stable message is marked as the cache breakpoint.
+// Leading with RELEVANT would put volatile bytes ahead of the whole transcript, so
+// nothing after them could ever match and the conversation would be re-uploaded at
+// full price every turn.
+//
+// Memory injection never commits to the runtime baseline.
 func (m *ContextManager) Project(ctx context.Context, msgs []ac.AgentMessage) (ac.ContextProjection, error) {
 	proj, err := m.inner.Project(ctx, msgs)
 	if err != nil {
@@ -140,9 +147,46 @@ func (m *ContextManager) Project(ctx context.Context, msgs []ac.AgentMessage) (a
 
 	m.recordRetrieved(core, relevant)
 
-	memMsg := m.formatLayered(core, relevant)
-	proj.Messages = append([]ac.AgentMessage{memMsg}, proj.Messages...)
+	if len(core) > 0 {
+		proj.Messages = append([]ac.AgentMessage{m.formatCore(core)}, proj.Messages...)
+	}
+	if len(relevant) > 0 {
+		proj.Messages = markCacheBreakpoint(proj.Messages)
+		proj.Messages = append(proj.Messages, m.formatRelevant(relevant))
+	}
 	return proj, nil
+}
+
+// cacheBreakpoint is the marker written to Message.Metadata["cache_control"], the
+// key agentcore already uses for provider cache placement. It means "everything up
+// to and including this message is stable, cache it here"; the provider adapter
+// picks the actual TTL.
+const cacheBreakpoint = "ephemeral"
+
+// markCacheBreakpoint stamps the last message as the end of the stable prefix, so
+// an adapter places its breakpoint there instead of on the volatile block appended
+// after it. Returns the input unchanged when the last message is not an ac.Message
+// and there is nothing to stamp: a missing marker costs a cache read, never
+// correctness.
+func markCacheBreakpoint(msgs []ac.AgentMessage) []ac.AgentMessage {
+	if len(msgs) == 0 {
+		return msgs
+	}
+	last, ok := msgs[len(msgs)-1].(ac.Message)
+	if !ok {
+		return msgs
+	}
+	md := make(map[string]any, len(last.Metadata)+1)
+	for k, v := range last.Metadata {
+		md[k] = v
+	}
+	md["cache_control"] = cacheBreakpoint
+	last.Metadata = md
+
+	out := make([]ac.AgentMessage, len(msgs))
+	copy(out, msgs)
+	out[len(out)-1] = last
+	return out
 }
 
 // alwaysIncludeEntries pulls every entry of every AlwaysInclude Kind for the
@@ -256,28 +300,30 @@ func sha256hex(s string) string {
 // non-empty. CORE stays at the top so the model sees stable facts before
 // situational ones — matters when budget is tight and the model truncates from
 // the bottom.
-func (m *ContextManager) formatLayered(core, relevant []memory.Entry) ac.Message {
+func (m *ContextManager) formatCore(core []memory.Entry) ac.Message {
 	var b strings.Builder
-	if len(core) > 0 {
-		b.WriteString("Core memories (always relevant):\n\n")
-		writeEntries(&b, core)
-		if len(relevant) > 0 {
-			b.WriteString("\n")
-		}
+	b.WriteString("Core memories (always relevant):\n\n")
+	writeEntries(&b, core)
+	return memoryMessage(b.String())
+}
+
+func (m *ContextManager) formatRelevant(relevant []memory.Entry) ac.Message {
+	var b strings.Builder
+	if m.header != "" {
+		b.WriteString(m.header)
+	} else {
+		b.WriteString("Relevant memories for this conversation:")
 	}
-	if len(relevant) > 0 {
-		if m.header != "" {
-			b.WriteString(m.header)
-		} else {
-			b.WriteString("Relevant memories for this conversation:")
-		}
-		b.WriteString("\n\n")
-		writeEntries(&b, relevant)
-	}
+	b.WriteString("\n\n")
+	writeEntries(&b, relevant)
+	return memoryMessage(b.String())
+}
+
+func memoryMessage(text string) ac.Message {
 	return ac.Message{
 		Role: ac.Role("user"),
 		Content: []ac.ContentBlock{
-			ac.TextBlock(b.String()),
+			ac.TextBlock(text),
 		},
 	}
 }
