@@ -16,13 +16,26 @@ DISALLOWED_LICENSE_TYPES ?= forbidden,restricted
 GOLANGCI_LINT_VERSION ?= v2.12.2
 GOLANGCI_LINT_PKG ?= github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 
-.PHONY: vet test lint license-audit
+.PHONY: vet test lint license-audit test-postgres
 
 vet:
 	$(GO) vet ./...
 
 test:
 	$(GO) test -race ./...
+
+PG_TEST_IMG  ?= postgres:17-alpine
+PG_TEST_PORT ?= 5439
+PG_TEST_DSN   = postgres://postgres:jess@127.0.0.1:$(PG_TEST_PORT)/postgres?sslmode=disable
+
+# Spin a throwaway Postgres, run the ledger suite against it, tear it down.
+# Container is removed even when tests fail; exit status is the test status.
+test-postgres:
+	docker run -d --rm --name jess-pg-test -e POSTGRES_PASSWORD=jess \
+		-p 127.0.0.1:$(PG_TEST_PORT):5432 $(PG_TEST_IMG)
+	@until docker exec jess-pg-test pg_isready -U postgres -q; do sleep 0.5; done
+	@JESS_TEST_POSTGRES_DSN="$(PG_TEST_DSN)" $(GO) test -race ./ledger/...; \
+		status=$$?; docker stop jess-pg-test >/dev/null; exit $$status
 
 # lint runs golangci-lint against .golangci.yml. Prefers an installed
 # binary (fast); falls back to `go run` so a fresh clone needs only the

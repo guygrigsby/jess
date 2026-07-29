@@ -15,6 +15,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
 
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_PASSWORD: jess
+        ports:
+          - 5439:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
     steps:
       - uses: actions/checkout@v5
 
@@ -35,6 +48,8 @@ jobs:
         # E2E test in memory/embed/gomlx downloads ~90MB; gated on
         # JESS_EMBEDDER_E2E env var so CI doesn't pay it. Set in a
         # separate workflow when we want pre-release verification.
+        env:
+          JESS_TEST_POSTGRES_DSN: postgres://postgres:jess@127.0.0.1:5439/postgres?sslmode=disable
         run: go test -race -timeout 5m ./...
 
   lint:
