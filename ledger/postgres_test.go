@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"os"
@@ -48,6 +49,9 @@ func TestPostgresCommitGetChain(t *testing.T) {
 	got, err := pg.Get(act.EventID)
 	if err != nil || got.Tool != "delete_file" {
 		t.Fatalf("Get: %+v err=%v", got, err)
+	}
+	if !bytes.Equal(got.Args, act.Args) {
+		t.Fatalf("payload round-trip not byte-exact: got %s want %s", got.Args, act.Args)
 	}
 	chain, err := pg.Chain(runID)
 	if err != nil {

@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"bytes"
 	"database/sql"
 	"errors"
 	"path/filepath"
@@ -34,6 +35,9 @@ func TestSQLiteCommitGetChain(t *testing.T) {
 	got, err := db.Get(act.EventID)
 	if err != nil || got.Tool != "delete_file" {
 		t.Fatalf("Get: %+v err=%v", got, err)
+	}
+	if !bytes.Equal(got.Args, act.Args) {
+		t.Fatalf("payload round-trip not byte-exact: got %s want %s", got.Args, act.Args)
 	}
 	chain, err := db.Chain("r1")
 	if err != nil {

@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS events(
   ts      BIGINT NOT NULL,
   kind    TEXT NOT NULL,
   tool    TEXT,
-  payload JSONB
+  payload TEXT
 );
 CREATE INDEX IF NOT EXISTS events_run  ON events(run_id);
 CREATE INDEX IF NOT EXISTS events_call ON events(call_id);`
