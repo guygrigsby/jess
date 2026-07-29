@@ -18,7 +18,7 @@ on the falcon's leg.
 
 - **`jess/skill`** — registerable capability bundles. A `Skill` is a name, description, system-prompt contribution, and zero-or-more tools. Loads from disk (filesystem layout mirrors Claude Code skills) or by direct registration. Wired via `jess.WithSkills(set)`.
 
-- **`jess/ledger`** — durable provenance ledger (agentcore-free). Every tool request, gate decision, and run boundary is recorded. The ledger is structured as a chain triad: request, available context, and actions. `SQLite` is the default durable backend (pure-Go, no CGO). `DiscardSink{}` turns recording off explicitly; it is never off silently.
+- **`jess/ledger`** — durable provenance ledger (agentcore-free). Every tool request, gate decision, and run boundary is recorded. The ledger is structured as a chain triad: request, available context, and actions. `SQLite` is the default durable backend (pure-Go, no CGO); `OpenPostgres`/`NewPostgres` provide the same DurableSink + Reader on PostgreSQL for shared or replicated deployments. `DiscardSink{}` turns recording off explicitly; it is never off silently.
 
 - **`jess/gate`** — fail-closed tool gate. Tools implementing `SafeTool` are auto-approved. Everything else goes to the `Approver` if one is wired; without an approver, non-safe tools are denied. `AllowAll()` is the explicit opt-out.
 

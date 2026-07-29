@@ -12,6 +12,7 @@ what the rules become at v1.
 ### Added (feat/provenance-ledger — ADR 0003)
 - **`jess/ledger`** replaces `jess/audit`. Structured provenance ledger keyed on ULID `EventID`. `Event` gains `RunID`, `CallID`, `Refs` (typed `Ref{Source,ID,Hash}`), and `Kind` constants `KindRequest`, `KindRetrieved`, `KindAction` alongside the prior observation kinds.
 - `DurableSink` interface (`CommitAction`) splits the write contract: observation sinks (`JSONLSink`, `DiscardSink`) cannot authorize actions; `SQLite` (pure-Go via `modernc.org/sqlite`, no CGO) implements both `DurableSink` and `Reader`.
+- ledger: Postgres backend (`OpenPostgres`, `NewPostgres`), same DurableSink/Reader contract as SQLite; `make test-postgres` runs the suite against a throwaway container.
 - `Chain`/`Action`/`AssembleChain`: the request/retrieved/action triad. `SQLite.Chain(runID)` reconstructs a run's provenance via an index-backed query; `AssembleChain` pairs actions and results by `CallID`.
 - Enforcement ("no durable record, no action"): the audit middleware in `internal/core` commits a self-explaining `KindAction` before any non-safe tool runs; if the sink is not a `DurableSink` or `CommitAction` fails, the tool is denied. Gate-independent: `AllowAll` cannot bypass it.
 - Gate records denied non-safe attempts as `KindAction(denied)` so blocked calls are chain-visible.
