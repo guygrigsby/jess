@@ -3,8 +3,6 @@ package ledger
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
-	"time"
 
 	_ "modernc.org/sqlite"
 )
@@ -48,17 +46,8 @@ func OpenSQLite(path string) (*SQLite, error) {
 // Close releases the underlying database handle.
 func (s *SQLite) Close() error { return s.db.Close() }
 
-// zeroID is the all-zero ULID, rejected as a primary key.
-var zeroID EventID
-
 func (s *SQLite) insert(e Event) error {
-	if e.EventID == zeroID {
-		return errors.New("ledger: zero EventID")
-	}
-	if e.Time.IsZero() {
-		e.Time = time.Now()
-	}
-	payload, err := json.Marshal(e)
+	e, payload, err := prepareInsert(e)
 	if err != nil {
 		return err
 	}
@@ -77,14 +66,8 @@ func (s *SQLite) Record(e Event) error { return s.insert(e) }
 // happened" is rejected, so the caller denies rather than store junk.
 // Implements DurableSink.
 func (s *SQLite) CommitAction(e Event) error {
-	if e.Kind != KindAction {
-		return errors.New("ledger: CommitAction requires KindAction")
-	}
-	if e.RunID == "" || e.CallID == "" || e.Tool == "" || len(e.Args) == 0 {
-		return errors.New("ledger: action record not self-explaining (need RunID, CallID, Tool, Args)")
-	}
-	if len(e.Refs) == 0 {
-		return errors.New("ledger: action record has no embedded why (Refs empty)")
+	if err := validateAction(e); err != nil {
+		return err
 	}
 	return s.insert(e)
 }

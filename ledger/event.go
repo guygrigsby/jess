@@ -8,6 +8,7 @@ package ledger
 import (
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"sync"
 	"time"
 
@@ -91,5 +92,37 @@ type Event struct {
 	Result     json.RawMessage `json:"result,omitempty"`
 	Err        string          `json:"err,omitempty"`
 	DurationMS int64           `json:"duration_ms,omitempty"`
+}
+
+// zeroID is the all-zero ULID, rejected as a primary key.
+var zeroID EventID
+
+// prepareInsert validates and normalizes an Event for the write path shared by
+// every durable backend: zero ids are rejected, a zero Time defaults to now,
+// and the JSON payload is what the backend persists.
+func prepareInsert(e Event) (Event, []byte, error) {
+	if e.EventID == zeroID {
+		return e, nil, errors.New("ledger: zero EventID")
+	}
+	if e.Time.IsZero() {
+		e.Time = time.Now()
+	}
+	payload, err := json.Marshal(e)
+	return e, payload, err
+}
+
+// validateAction enforces the CommitAction contract: a stored action must be
+// self-explaining on its own row, or the caller denies rather than store junk.
+func validateAction(e Event) error {
+	if e.Kind != KindAction {
+		return errors.New("ledger: CommitAction requires KindAction")
+	}
+	if e.RunID == "" || e.CallID == "" || e.Tool == "" || len(e.Args) == 0 {
+		return errors.New("ledger: action record not self-explaining (need RunID, CallID, Tool, Args)")
+	}
+	if len(e.Refs) == 0 {
+		return errors.New("ledger: action record has no embedded why (Refs empty)")
+	}
+	return nil
 }
 
