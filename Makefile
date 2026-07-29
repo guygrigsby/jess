@@ -31,11 +31,20 @@ PG_TEST_DSN   = postgres://postgres:jess@127.0.0.1:$(PG_TEST_PORT)/postgres?sslm
 # Spin a throwaway Postgres, run the ledger suite against it, tear it down.
 # Container is removed even when tests fail; exit status is the test status.
 test-postgres:
+	@docker rm -f jess-pg-test 2>/dev/null || true; \
 	docker run -d --rm --name jess-pg-test -e POSTGRES_PASSWORD=jess \
-		-p 127.0.0.1:$(PG_TEST_PORT):5432 $(PG_TEST_IMG)
-	@until docker exec jess-pg-test pg_isready -U postgres -q; do sleep 0.5; done
-	@JESS_TEST_POSTGRES_DSN="$(PG_TEST_DSN)" $(GO) test -race ./ledger/...; \
-		status=$$?; docker stop jess-pg-test >/dev/null; exit $$status
+		-p 127.0.0.1:$(PG_TEST_PORT):5432 $(PG_TEST_IMG); \
+	for i in $$(seq 1 60); do \
+		docker exec jess-pg-test pg_isready -U postgres -q 2>/dev/null && break; \
+		sleep 0.5; \
+	done; \
+	if ! docker exec jess-pg-test pg_isready -U postgres -q 2>/dev/null; then \
+		echo "postgres readiness timeout"; \
+		docker stop jess-pg-test >/dev/null 2>&1 || true; \
+		exit 1; \
+	fi; \
+	JESS_TEST_POSTGRES_DSN="$(PG_TEST_DSN)" $(GO) test -race ./ledger/...; \
+	status=$$?; docker stop jess-pg-test >/dev/null 2>&1 || true; exit $$status
 
 # lint runs golangci-lint against .golangci.yml. Prefers an installed
 # binary (fast); falls back to `go run` so a fresh clone needs only the
