@@ -90,18 +90,28 @@ func (s *SQLite) Chain(runID string) (Chain, error) {
 	if err != nil {
 		return Chain{}, err
 	}
+	events, err := scanEvents(rows)
+	if err != nil {
+		return Chain{}, err
+	}
+	return AssembleChain(events), nil
+}
+
+// scanEvents drains rows of single-column JSON payloads into Events. Shared by
+// every database/sql backend's Chain.
+func scanEvents(rows *sql.Rows) ([]Event, error) {
 	defer func() { _ = rows.Close() }()
 	var events []Event
 	for rows.Next() {
 		var payload []byte
 		if err := rows.Scan(&payload); err != nil {
-			return Chain{}, err
+			return nil, err
 		}
 		var e Event
 		if err := json.Unmarshal(payload, &e); err != nil {
-			return Chain{}, err
+			return nil, err
 		}
 		events = append(events, e)
 	}
-	return AssembleChain(events), rows.Err()
+	return events, rows.Err()
 }
