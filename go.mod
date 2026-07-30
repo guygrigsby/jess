@@ -2,6 +2,8 @@ module github.com/guygrigsby/jess
 
 go 1.26.2
 
+toolchain go1.26.5
+
 require (
 	github.com/gomlx/compute v0.0.0-20260513142435-475f5b6f6389
 	github.com/gomlx/go-huggingface v0.3.6-0.20260514042659-ecb0f10a1c27
