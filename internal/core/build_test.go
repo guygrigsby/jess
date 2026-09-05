@@ -100,3 +100,24 @@ func TestStreamRecordsRequestHeadAndRunEnd(t *testing.T) {
 		t.Fatalf("RunID mismatch: KindRequest=%q KindRunEnd=%q", reqRunID, endRunID)
 	}
 }
+
+// TestReleaseAgentRemovesRegistryEntry pins the registry lifecycle the root
+// package's ReleaseAgent depends on: Agent registers the audit wiring keyed
+// by the *ac.Agent pointer, and ReleaseAgent must remove it, or every agent a
+// long-lived caller builds (one per job, one per attempt) leaks that entry
+// forever.
+func TestReleaseAgentRemovesRegistryEntry(t *testing.T) {
+	echo := Once(false, func(_ context.Context, _ []ac.Message, _ []ac.ToolSpec) (*ac.LLMResponse, error) {
+		return &ac.LLMResponse{Message: ac.Message{Role: ac.RoleAssistant, Content: []ac.ContentBlock{ac.TextBlock("done")}}}, nil
+	})
+	ag := Agent(Config{Model: echo})
+	if sinkFor(ag) == nil {
+		t.Fatal("Agent did not register the agent")
+	}
+	ReleaseAgent(ag)
+	if sinkFor(ag) != nil {
+		t.Fatal("ReleaseAgent left the registry entry in place")
+	}
+	// Calling it again must not panic.
+	ReleaseAgent(ag)
+}
