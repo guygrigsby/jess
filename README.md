@@ -22,6 +22,8 @@ on the falcon's leg.
 
 - **`jess/gate`** — fail-closed tool gate. Tools implementing `SafeTool` are auto-approved. Everything else goes to the `Approver` if one is wired; without an approver, non-safe tools are denied. `AllowAll()` is the explicit opt-out.
 
+- **`jess/mcp`**, MCP stdio servers adapted into agentcore tools. `Tools(ctx, servers, logf)` launches each allowlisted server, lists its tools and returns them as `[]ac.Tool` plus a closer. Names are `<server>__<tool>` or bare (`Server.Bare`); JSON results pass through unwrapped. Only this package imports the MCP SDK.
+
 ## Install
 
 ```bash
@@ -102,6 +104,7 @@ jess/
 │   ├── sqlite.go                 # SQLite (DurableSink + Reader, pure-Go modernc)
 │   └── chain.go                  # Chain, Action, Reader, Resolver, AssembleChain
 ├── gate/                         # fail-closed tool gate (SafeTool, Approver, Policy)
+├── mcp/                          # MCP stdio servers as agentcore tools
 ├── memory/                       # the memory subsystem (agentcore-free)
 │   ├── memory.go                 # Entry, Store, Query, Recaller, VectorStore
 │   ├── kind.go                   # Kind constants, KindPolicy, KindRegistry

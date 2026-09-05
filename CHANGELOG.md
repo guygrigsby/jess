@@ -9,6 +9,11 @@ what the rules become at v1.
 
 ## Unreleased
 
+### Added (feat/mcp-adapter, ADR 0004)
+- **`jess/mcp`** adapts MCP stdio servers into agentcore tools. `Tools(ctx, servers, logf)` launches each allowlisted server, lists its tools and returns them as `[]ac.Tool` plus a closer. Names are `<server>__<tool>` or bare (`Server.Bare`); a text result that is valid JSON passes through unwrapped instead of double-wrapped. Adapted tools stay non-safe; the host's gate decides.
+- jess gains a dependency on `github.com/modelcontextprotocol/go-sdk`; only `jess/mcp` imports it.
+- ADR 0004 added at `docs/adr/0004-mcp-adapter.md`.
+
 ### Added (feat/provenance-ledger — ADR 0003)
 - **`jess/ledger`** replaces `jess/audit`. Structured provenance ledger keyed on ULID `EventID`. `Event` gains `RunID`, `CallID`, `Refs` (typed `Ref{Source,ID,Hash}`), and `Kind` constants `KindRequest`, `KindRetrieved`, `KindAction` alongside the prior observation kinds.
 - `DurableSink` interface (`CommitAction`) splits the write contract: observation sinks (`JSONLSink`, `DiscardSink`) cannot authorize actions; `SQLite` (pure-Go via `modernc.org/sqlite`, no CGO) implements both `DurableSink` and `Reader`.
