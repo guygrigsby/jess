@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -46,19 +47,29 @@ func (s *sdkClient) listTools(ctx context.Context) ([]toolDef, error) {
 			Name:        t.Name,
 			Description: t.Description,
 			InputSchema: asSchemaMap(t.InputSchema),
+			ReadOnly:    t.Annotations != nil && t.Annotations.ReadOnlyHint,
 		})
 	}
 	return defs, nil
 }
 
+// callTool calls the named tool and reports its result under the [client]
+// contract: an MCP IsError result is the tool's own reported failure, meant
+// for the model to read and self-correct, so it comes back as text (prefixed
+// "error: ") with a nil error rather than a Go error. A non-nil error here is
+// a transport or protocol failure; a closed connection wraps ErrServerGone so
+// callers can check it with errors.Is.
 func (s *sdkClient) callTool(ctx context.Context, name string, args map[string]any) (string, error) {
 	res, err := s.session.CallTool(ctx, &mcpsdk.CallToolParams{Name: name, Arguments: args})
 	if err != nil {
+		if errors.Is(err, mcpsdk.ErrConnectionClosed) {
+			return "", fmt.Errorf("tools/call %q: %w: %w", name, ErrServerGone, err)
+		}
 		return "", fmt.Errorf("tools/call %q: %w", name, err)
 	}
 	text := collectText(res.Content)
 	if res.IsError {
-		return "", fmt.Errorf("tools/call %q reported error: %s", name, text)
+		return "error: " + text, nil
 	}
 	return text, nil
 }

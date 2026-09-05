@@ -4,16 +4,23 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"reflect"
+	"strings"
 	"testing"
 )
 
 // fakeClient is a hermetic stand-in for the MCP SDK client: no subprocess, no
 // SDK. It records the last callTool invocation so tests can assert it.
+//
+// isError models the same contract the real client (client_sdk.go) applies to
+// an MCP IsError result: the tool's own reported failure comes back as text
+// (prefixed "error: ") with a nil error, never as a Go error.
 type fakeClient struct {
 	defs    []toolDef
 	listErr error
 	result  string
+	isError bool
 	callErr error
 	closed  bool
 	gotName string
@@ -31,6 +38,9 @@ func (f *fakeClient) callTool(_ context.Context, name string, args map[string]an
 	f.gotName, f.gotArgs = name, args
 	if f.callErr != nil {
 		return "", f.callErr
+	}
+	if f.isError {
+		return "error: " + f.result, nil
 	}
 	return f.result, nil
 }
@@ -130,6 +140,33 @@ func TestExecuteMarshalsArgsAndReturnsOutput(t *testing.T) {
 	}
 }
 
+// TestToolsErrorsWhenEveryServerFails proves that when every requested
+// server fails to dial or list, Tools returns an error naming each server
+// and its failure, with no tools and an already-safe-to-close closer.
+func TestToolsErrorsWhenEveryServerFails(t *testing.T) {
+	badList := &fakeClient{listErr: errors.New("boom")}
+	restore := withDialMap(map[string]client{"badlist": badList})
+	defer restore()
+
+	servers := []Server{{Name: "baddial"}, {Name: "badlist"}}
+	tools, closer, err := Tools(context.Background(), servers, nil)
+	if err == nil {
+		t.Fatal("expected an error when every server fails")
+	}
+	if tools != nil {
+		t.Errorf("tools should be nil, got %v", tools)
+	}
+	if !strings.Contains(err.Error(), "baddial") || !strings.Contains(err.Error(), "badlist") {
+		t.Errorf("error should name both failing servers: %v", err)
+	}
+	if closer == nil {
+		t.Fatal("closer must not be nil")
+	}
+	if cerr := closer.Close(); cerr != nil {
+		t.Errorf("closer should already be safe to close: %v", cerr)
+	}
+}
+
 func TestListToolsErrorSkipsServerWithoutFailingOthers(t *testing.T) {
 	bad := &fakeClient{listErr: errors.New("boom")}
 	good := &fakeClient{defs: []toolDef{{Name: "ok", Description: "ok"}}}
@@ -221,26 +258,166 @@ func TestBareNamesSkipThePrefix(t *testing.T) {
 	}
 }
 
-// TestJSONResultPassesThrough proves a tool result that is valid JSON is
-// returned unwrapped, and plain text is still wrapped as {"output": text}.
+// TestJSONResultPassesThrough proves a tool result that is a JSON object or
+// array is returned unwrapped, while plain text and JSON scalars (numbers,
+// booleans, quoted strings) still get wrapped as {"output": text}.
 func TestJSONResultPassesThrough(t *testing.T) {
 	fc := &fakeClient{defs: []toolDef{{Name: "read"}}, result: `{"content":"hello","lines":1}`}
 	restore := withDial(func(context.Context, Server) (client, error) { return fc, nil })
 	defer restore()
 
-	tools, closer, _ := Tools(context.Background(), []Server{{Name: "s", Command: "x"}}, nil)
+	tools, closer, err := Tools(context.Background(), []Server{{Name: "s", Command: "x"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer func() { _ = closer.Close() }()
 	out, err := tools[0].Execute(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(out) != `{"content":"hello","lines":1}` {
-		t.Errorf("json result was wrapped: %s", out)
+		t.Errorf("json object was wrapped: %s", out)
+	}
+
+	fc.result = `["a","b"]`
+	out, err = tools[0].Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `["a","b"]` {
+		t.Errorf("json array was wrapped: %s", out)
 	}
 
 	fc.result = "plain words"
-	out, _ = tools[0].Execute(context.Background(), nil)
+	out, err = tools[0].Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
 	if string(out) != `{"output":"plain words"}` {
 		t.Errorf("text result = %s", out)
+	}
+
+	// A scalar (bare number here) is valid JSON but not a container, so it
+	// keeps the envelope rather than passing through as a bare JSON value.
+	fc.result = "42"
+	out, err = tools[0].Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(out) != `{"output":"42"}` {
+		t.Errorf("scalar JSON was passed through unwrapped: %s", out)
+	}
+}
+
+// TestIsErrorResultIsNotAGoError proves a tool's own reported failure (MCP
+// IsError) surfaces as ordinary Execute output, not a Go error, so agentcore's
+// consecutive-failure breaker never counts it against the tool.
+func TestIsErrorResultIsNotAGoError(t *testing.T) {
+	fc := &fakeClient{defs: []toolDef{{Name: "run"}}, result: "file not found", isError: true}
+	restore := withDial(func(context.Context, Server) (client, error) { return fc, nil })
+	defer restore()
+
+	tools, closer, err := Tools(context.Background(), []Server{{Name: "s", Command: "x"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	out, err := tools[0].Execute(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("IsError must not become a Go error: %v", err)
+	}
+	var got struct {
+		Output string `json:"output"`
+	}
+	if uerr := json.Unmarshal(out, &got); uerr != nil {
+		t.Fatalf("unmarshal output: %v", uerr)
+	}
+	if got.Output != "error: file not found" {
+		t.Errorf("output = %q, want the text prefixed with \"error: \"", got.Output)
+	}
+}
+
+// TestReadOnlyHintReachesTool proves toolDef.ReadOnly threads through to the
+// adapted tool's ReadOnly method so agentcore can schedule it concurrently.
+func TestReadOnlyHintReachesTool(t *testing.T) {
+	fc := &fakeClient{defs: []toolDef{
+		{Name: "list_files", ReadOnly: true},
+		{Name: "delete_file"},
+	}}
+	restore := withDialMap(map[string]client{"fs": fc})
+	defer restore()
+
+	tools, closer, err := Tools(context.Background(), []Server{{Name: "fs"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	type readOnlyer interface {
+		ReadOnly(json.RawMessage) bool
+	}
+	ro, ok := tools[0].(readOnlyer)
+	if !ok {
+		t.Fatal("adapted tool does not implement ReadOnly")
+	}
+	if !ro.ReadOnly(nil) {
+		t.Error("read-only hint should carry through as true")
+	}
+	ro2, ok := tools[1].(readOnlyer)
+	if !ok {
+		t.Fatal("adapted tool does not implement ReadOnly")
+	}
+	if ro2.ReadOnly(nil) {
+		t.Error("a tool without the hint should not report read only")
+	}
+}
+
+// TestExecuteSurfacesCallToolError proves a callTool error (transport or
+// protocol failure, as opposed to an MCP IsError result) surfaces from
+// Execute, and that Execute's %w wrapping keeps errors.Is working against a
+// sentinel like ErrServerGone.
+func TestExecuteSurfacesCallToolError(t *testing.T) {
+	fc := &fakeClient{defs: []toolDef{{Name: "run"}}, callErr: fmt.Errorf("connection: %w", ErrServerGone)}
+	restore := withDial(func(context.Context, Server) (client, error) { return fc, nil })
+	defer restore()
+
+	tools, closer, err := Tools(context.Background(), []Server{{Name: "s", Command: "x"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	_, err = tools[0].Execute(context.Background(), nil)
+	if err == nil {
+		t.Fatal("expected callTool error to surface from Execute")
+	}
+	if !errors.Is(err, ErrServerGone) {
+		t.Errorf("error should wrap ErrServerGone, got %v", err)
+	}
+}
+
+// TestBareDescriptionIsNotPrefixed proves a bare server's tool descriptions
+// keep their own text (no "[server] " prefix), and an empty description
+// stays empty rather than becoming "[server] ".
+func TestBareDescriptionIsNotPrefixed(t *testing.T) {
+	fc := &fakeClient{defs: []toolDef{
+		{Name: "bash", Description: "run a command"},
+		{Name: "noop"},
+	}}
+	restore := withDial(func(context.Context, Server) (client, error) { return fc, nil })
+	defer restore()
+
+	tools, closer, err := Tools(context.Background(), []Server{{Name: "toolbox", Command: "x", Bare: true}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = closer.Close() }()
+
+	if got := tools[0].Description(); got != "run a command" {
+		t.Errorf("bare description prefixed: %q", got)
+	}
+	if got := tools[1].Description(); got != "" {
+		t.Errorf("empty description should stay empty, got %q", got)
 	}
 }
